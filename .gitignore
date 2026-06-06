@@ -1,0 +1,14 @@
+outputs/
+models/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.cache/
+.ipynb_checkpoints/
+.idea/
+.vscode/
+.DS_Store

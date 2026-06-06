@@ -1,0 +1,4 @@
+# Optional dependencies for scripts/model_artifacts/export_onnx.py.
+# Install this after requirements.txt only when you need ONNX export.
+onnx>=1.17.0
+onnxruntime-gpu>=1.20.0
