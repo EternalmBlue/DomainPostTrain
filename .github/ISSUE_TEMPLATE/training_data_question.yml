@@ -1,0 +1,38 @@
+name: Training or data question
+description: Ask about CPT, Fact-SFT, DPO, validation, or quality evaluation data.
+title: "[Question]: "
+labels: ["question", "data"]
+body:
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      options:
+        - CPT corpus
+        - Fact-SFT examples
+        - DPO preference pairs
+        - Training validation set
+        - Post-training quality evaluation
+        - Config tuning
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Ask the question without including private documents or credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include only safe config snippets or synthetic data shapes.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I did not include private documents, customer data, credentials, or private prompts.
+          required: true

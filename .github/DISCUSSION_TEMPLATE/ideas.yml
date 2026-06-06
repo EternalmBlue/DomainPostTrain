@@ -1,0 +1,23 @@
+title: "[Idea] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use Ideas for proposals that are not yet scoped as issues.
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idea
+      description: What should DomainPostTrain support or improve?
+    validations:
+      required: true
+  - type: textarea
+    id: value
+    attributes:
+      label: Value
+      description: Who benefits, and what workflow becomes easier?
+  - type: textarea
+    id: scope
+    attributes:
+      label: Possible scope
+      description: What would a small first version look like?

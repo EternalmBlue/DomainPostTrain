@@ -1,0 +1,17 @@
+title: "[Announcement] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Maintainer announcements for releases, roadmap changes, and important project updates.
+  - type: textarea
+    id: update
+    attributes:
+      label: Update
+    validations:
+      required: true
+  - type: textarea
+    id: links
+    attributes:
+      label: Links
+      description: Release notes, docs, issues, or pull requests.

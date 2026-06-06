@@ -3,8 +3,37 @@
 <p align="center">
   <a href="#chinese"><strong>中文</strong></a>
   &nbsp;|&nbsp;
+  <a href="#architecture"><strong>架构图 / Architecture</strong></a>
+  &nbsp;|&nbsp;
   <a href="#english"><strong>English</strong></a>
 </p>
+
+<a id="architecture"></a>
+
+## 架构图 / Architecture
+
+```mermaid
+flowchart LR
+    cptDocs["CPT 文档<br/>CPT documents<br/>data/cpt/source_documents"] --> cptDataset["CPT 数据集构造<br/>coverage + safety preflight"]
+    cptDataset --> cptAdapter["CPT LoRA/QLoRA adapter<br/>outputs/lora_adapter"]
+
+    sftRows["Fact-SFT 样例<br/>Fact-SFT examples<br/>data/sft"] --> sftStage["Fact-SFT<br/>assistant-only loss"]
+    cptAdapter --> sftStage
+    sftStage --> sftAdapter["Fact-SFT adapter<br/>outputs/fact_sft_adapter"]
+
+    dpoRows["DPO 偏好样例<br/>DPO preferences<br/>data/dpo"] -.-> dpoStage["可选 DPO<br/>optional preference alignment"]
+    sftAdapter --> dpoStage
+    dpoStage --> dpoAdapter["DPO adapter<br/>outputs/dpo_adapter"]
+
+    sftAdapter --> adapterChoice["Adapter 选择<br/>CPT / SFT / DPO"]
+    dpoAdapter --> adapterChoice
+    adapterChoice --> mergedModel["合并模型<br/>Merged model<br/>outputs/merged_model"]
+
+    evalSet["质量评估题集<br/>Quality questions<br/>data/eval"] --> qualityEval["训练后质量评估<br/>Post-training evaluation"]
+    mergedModel --> qualityEval
+    mergedModel --> inference["推理服务<br/>OpenAI-compatible API"]
+    mergedModel --> exportPath["模型导出<br/>GGUF default / ONNX optional"]
+```
 
 <a id="chinese"></a>
 

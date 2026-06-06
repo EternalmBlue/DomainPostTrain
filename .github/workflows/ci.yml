@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Compile Python sources
+        run: python -m compileall -q pipeline scripts serve_inference.py
+
+      - name: Validate JSONL example data
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path.cwd()
+          checks = [
+              (root / "data" / "eval" / "quality_questions.jsonl", {"category", "question"}),
+              (root / "data" / "sft" / "fact_sft_core_examples.jsonl", {"instruction", "output"}),
+              (root / "data" / "sft" / "fact_sft_additional_examples.jsonl", {"instruction", "output"}),
+              (root / "data" / "dpo" / "preference_examples.jsonl", {"prompt", "chosen", "rejected"}),
+          ]
+          allowed_eval_categories = {"domain_knowledge", "safety_boundary", "base_regression"}
+          for path, expected_keys in checks:
+              rows = 0
+              for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                  if not line.strip():
+                      continue
+                  row = json.loads(line)
+                  if set(row) != expected_keys:
+                      raise SystemExit(f"{path}:{line_number} expected keys {sorted(expected_keys)}, got {sorted(row)}")
+                  if not all(str(value).strip() for value in row.values()):
+                      raise SystemExit(f"{path}:{line_number} contains an empty value")
+                  if path.name == "quality_questions.jsonl" and row["category"] not in allowed_eval_categories:
+                      raise SystemExit(f"{path}:{line_number} unsupported eval category: {row['category']}")
+                  if path.name == "preference_examples.jsonl" and row["chosen"] == row["rejected"]:
+                      raise SystemExit(f"{path}:{line_number} chosen and rejected must differ")
+                  rows += 1
+              if rows == 0:
+                  raise SystemExit(f"{path} contains no rows")
+              print(f"{path}: {rows} rows")
+          PY
+
+      - name: Check config README coverage
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          config = Path("configs/domain_post_training.yaml").read_text(encoding="utf-8")
+          readme = Path("configs/README.md").read_text(encoding="utf-8")
+          keys = []
+          for line in config.splitlines():
+              match = re.match(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*):", line)
+              if match:
+                  key = match.group(2)
+                  if key not in keys:
+                      keys.append(key)
+          missing = [key for key in keys if f"`{key}`" not in readme]
+          if missing:
+              raise SystemExit(f"configs/README.md does not document keys: {missing}")
+          print(f"Documented config keys: {len(keys)}")
+          PY
+
+      - name: Check README references
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path.cwd()
+          readme = Path("README.md").read_text(encoding="utf-8")
+          expected = [
+              "configs/README.md",
+              "scripts/README.md",
+              "data/README.md",
+              "SECURITY.md",
+              "CONTRIBUTING.md",
+              "requirements.txt",
+              "requirements-onnx.txt",
+              "scripts/model_artifacts/download_models.py",
+              "scripts/training/train_pipeline.py",
+              "scripts/inference/run_quality_evaluation.py",
+              "scripts/model_artifacts/export_gguf.py",
+              "scripts/model_artifacts/export_onnx.py",
+              "scripts/inference/run_inference.py",
+              "serve_inference.py",
+              "configs/domain_post_training.yaml",
+              "data/eval/quality_questions.jsonl",
+              "data/dpo/preference_examples.jsonl",
+          ]
+          missing_mentions = [path for path in expected if path not in readme]
+          missing_files = [path for path in expected if not (root / path).exists()]
+          if missing_mentions:
+              raise SystemExit(f"README.md is missing references: {missing_mentions}")
+          if missing_files:
+              raise SystemExit(f"README.md references missing files: {missing_files}")
+          print("README references are consistent.")
+          PY
+
+      - name: Check forbidden legacy domain strings
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          forbidden = [
+              "Web" + "Shop" + "X",
+              "web" + "shop",
+              "/" + "ws",
+              "Mine" + "craft",
+              "Buk" + "kit",
+              "Va" + "ult",
+              "Yu" + "Pay",
+              "Fo" + "lia",
+              "Luck" + "Perms",
+              "Placeholder" + "API",
+              "SHOP" + "_COIN",
+              "GAME" + "_COIN",
+          ]
+          roots = [Path("README.md"), Path("configs"), Path("data"), Path("pipeline"), Path("scripts"), Path("serve_inference.py")]
+          hits = []
+          for root in roots:
+              paths = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+              for path in paths:
+                  if any(part in {".git", "__pycache__"} for part in path.parts):
+                      continue
+                  try:
+                      text = path.read_text(encoding="utf-8")
+                  except UnicodeDecodeError:
+                      continue
+                  for token in forbidden:
+                      if token.lower() in text.lower():
+                          hits.append(f"{path}: {token}")
+          if hits:
+              raise SystemExit("Forbidden legacy domain strings found:\n" + "\n".join(hits))
+          print("No forbidden legacy domain strings found.")
+          PY

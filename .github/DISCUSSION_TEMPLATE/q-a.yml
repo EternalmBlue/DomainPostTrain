@@ -1,0 +1,33 @@
+title: "[Q&A] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use Q&A for setup help, config questions, data-shape questions, and troubleshooting. Do not include private data.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include safe config snippets, commands, and error messages.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Installation
+        - Config
+        - CPT
+        - Fact-SFT
+        - DPO
+        - Evaluation
+        - Inference
+        - GGUF
+        - ONNX
+        - Other

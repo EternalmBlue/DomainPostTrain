@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Q&A discussion
+    url: https://github.com/EternalmBlue/DomainPostTrain/discussions/categories/q-a
+    about: Ask usage questions or request help from the community.
+  - name: Ideas discussion
+    url: https://github.com/EternalmBlue/DomainPostTrain/discussions/categories/ideas
+    about: Share broader ideas before turning them into scoped issues.
+  - name: Security policy
+    url: https://github.com/EternalmBlue/DomainPostTrain/security/policy
+    about: Report private security issues through the security policy.
