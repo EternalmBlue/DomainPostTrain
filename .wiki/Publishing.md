@@ -2,13 +2,13 @@
 
 ## 中文
 
-当你要把主仓库 `.wiki/` 源文件发布到真正的 GitHub Wiki 时，使用本页。
+当你要把主仓库 `.wiki/` 源文件发布到 GitHub Wiki 仓库时，使用本页。
 
 GitHub Wiki 是独立 Git 仓库。只在主仓库创建 `.wiki/` 不会让页面自动上线。
 
 ## GitHub Wiki 机制
 
-GitHub Docs 当前说明：
+根据 GitHub Docs，GitHub Wiki 的发布规则包括：
 
 - Wiki 页面可以在 GitHub 网页上编辑，也可以本地编辑。
 - Wiki 至少有一个初始页面后才能 clone。
@@ -94,13 +94,13 @@ git push
 
 ## English
 
-Use this page when publishing `.wiki/` source files to the real GitHub Wiki.
+Use this page when publishing `.wiki/` source files to the GitHub Wiki repository.
 
 GitHub Wikis are Git repositories. Creating `.wiki/` in this main repository does not automatically make pages live on GitHub.
 
 ## GitHub Wiki Mechanics
 
-Current GitHub Docs state that:
+According to GitHub Docs, GitHub Wiki publishing works as follows:
 
 - Wiki pages can be edited on GitHub or locally.
 - A Wiki can be cloned after an initial page exists.

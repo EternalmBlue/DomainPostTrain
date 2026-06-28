@@ -72,6 +72,8 @@ python -c "import flask; print('service deps ok')"
 
 如果任一 import 失败，请在当前激活环境中安装缺失包。常见问题见 [故障排查](Troubleshooting)。
 
+如需检查 GPU、CUDA 和训练依赖状态，运行 `python scripts/diagnostics/check_training_environment.py`，并参考 [操作手册](Operations-Runbook)。
+
 ---
 
 ## English
@@ -145,3 +147,5 @@ python -c "import flask; print('service deps ok')"
 ```
 
 If any import fails, install the missing package in the active environment. See [Troubleshooting](Troubleshooting) for common dependency failures.
+
+For GPU and package diagnostics, run `python scripts/diagnostics/check_training_environment.py` and use [Operations Runbook](Operations-Runbook).

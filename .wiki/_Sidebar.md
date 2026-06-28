@@ -3,6 +3,7 @@
 - [首页 Home](Home)
 - [快速开始 Quick Start](Quick-Start)
 - [安装 Installation](Installation)
+- [操作手册 Operations](Operations-Runbook)
 
 ## 使用 Use
 

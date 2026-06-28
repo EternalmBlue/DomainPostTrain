@@ -15,7 +15,7 @@
 - 产品专属语料
 - 许可证受限训练数据
 
-中文提示：开源前先检查 `data/`、`configs/`、`outputs/`、`models/` 和 Wiki 示例，不要泄露私有信息。
+开源前先检查 `data/`、`configs/`、`outputs/`、`models/` 和 Wiki 示例，确认没有泄露私有信息。
 
 ## 推荐检查
 
@@ -81,7 +81,7 @@ Keep the repository domain-neutral. Do not add:
 - product-specific corpora
 - license-restricted training data
 
-Note: before open-sourcing, check `data/`, `configs/`, `outputs/`, `models/`, and Wiki examples to avoid leaking private information.
+Before open-sourcing, check `data/`, `configs/`, `outputs/`, `models/`, and Wiki examples to avoid leaking private information.
 
 ## Recommended Checks
 

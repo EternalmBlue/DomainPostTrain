@@ -26,7 +26,7 @@ validation 在训练过程中运行，提供 loss/eval 信号。quality evaluati
 
 ## 为什么本地 reward model 也要暴露 OpenAI-compatible API？
 
-GRPO reward judge 被刻意标准化为 `base_url`、`api_key_env`、`model` 三类核心配置。本地模型、DeepSeek、GLM 和其他托管 judge 都通过同一种 OpenAI-compatible chat completions 形状调用。这样可以避免为本地模型文件、Hub ID 和自定义 Python reward hook 维护多套代码路径。
+GRPO reward judge 使用 `base_url`、`api_key_env`、`model` 作为核心配置。本地模型、DeepSeek、GLM 和其他托管 judge 都通过同一种 OpenAI-compatible chat completions 形状调用。这样训练链路只负责标准 HTTP 调用，模型部署、并发、限流和显存管理由外部 judge 服务处理。
 
 ## 外部 reward judge 会替代内置奖励吗？
 
@@ -72,7 +72,7 @@ Enable GRPO when you have reward prompts and computable reward signals, and you 
 
 ## Why Must Local Reward Models Expose an OpenAI-Compatible API?
 
-The GRPO reward judge is intentionally standardized around `base_url`, `api_key_env`, and `model`. Local models, DeepSeek, GLM, and other hosted judges are all called through the same OpenAI-compatible chat completions shape. This avoids separate code paths for local model files, Hub IDs, and custom Python reward hooks.
+The GRPO reward judge uses `base_url`, `api_key_env`, and `model` as its core configuration. Local models, DeepSeek, GLM, and other hosted judges are all called through the same OpenAI-compatible chat completions shape. The training pipeline only handles the standard HTTP call; model deployment, concurrency, rate limits, and GPU memory are owned by the external judge service.
 
 ## Does the External Reward Judge Replace Built-in Rewards?
 

@@ -4,7 +4,7 @@
 
 当你想从一个新 checkout 快速验证 DomainPostTrain 是否能跑通时，使用本页。
 
-中文提示：快速自检只验证链路是否可用，不代表已经完成真实模型训练。真实训练仍需要替换数据、配置基础模型、准备 GPU 和检查输出质量。
+快速自检只验证链路是否可用，不代表已经完成真实模型训练。真实训练仍需要替换数据、配置基础模型、准备 GPU 和检查输出质量。
 
 ## 前置条件
 
@@ -71,6 +71,7 @@ python -m compileall pipeline scripts serve_inference.py
 ## 5. 下一步
 
 - 替换 mock 数据： [数据契约](Data-Contracts)
+- 检查训练环境和基础模型： [操作手册](Operations-Runbook)
 - 修改路径或训练设置： [配置](Configuration)
 - 跑完整训练流程： [训练流水线](Training-Pipeline)
 - 排查失败： [故障排查](Troubleshooting)
@@ -81,7 +82,7 @@ python -m compileall pipeline scripts serve_inference.py
 
 Use this page when you want the shortest path from a fresh checkout to a verified DomainPostTrain setup.
 
-Note: the quick smoke path verifies wiring only. It does not mean a real model has been trained. Real training still requires replacing data, configuring the base model, preparing GPU resources, and checking output quality.
+The quick smoke path verifies wiring only. It does not mean a real model has been trained. Real training still requires replacing data, configuring the base model, preparing GPU resources, and checking output quality.
 
 ## Prerequisites
 
@@ -148,6 +149,7 @@ Expected result: Python files compile without syntax errors. This does not prove
 ## 5. Next Pages
 
 - Replace the mock data: [Data Contracts](Data-Contracts)
+- Check the training environment and base model: [Operations Runbook](Operations-Runbook)
 - Change paths or training settings: [Configuration](Configuration)
 - Run the full training workflow: [Training Pipeline](Training-Pipeline)
 - Diagnose failures: [Troubleshooting](Troubleshooting)
