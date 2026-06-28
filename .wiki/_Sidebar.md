@@ -1,24 +1,23 @@
-## Start
+## 开始 Start
 
-- [Home](Home)
-- [Quick Start](Quick-Start)
-- [Installation](Installation)
+- [首页 Home](Home)
+- [快速开始 Quick Start](Quick-Start)
+- [安装 Installation](Installation)
 
-## Use
+## 使用 Use
 
-- [Configuration](Configuration)
-- [Data Contracts](Data-Contracts)
-- [Training Pipeline](Training-Pipeline)
-- [GRPO And Reward Judge](GRPO-and-Reward-Judge)
-- [Inference And Export](Inference-and-Export)
+- [配置 Configuration](Configuration)
+- [数据契约 Data Contracts](Data-Contracts)
+- [训练流水线 Training Pipeline](Training-Pipeline)
+- [GRPO 与 Reward Judge](GRPO-and-Reward-Judge)
+- [推理与导出 Inference and Export](Inference-and-Export)
 
-## Support
+## 支持 Support
 
-- [Troubleshooting](Troubleshooting)
-- [FAQ](FAQ)
+- [故障排查 Troubleshooting](Troubleshooting)
+- [常见问题 FAQ](FAQ)
 
-## Project
+## 项目 Project
 
-- [Contributing](Contributing)
-- [Publishing](Publishing)
-
+- [贡献指南 Contributing](Contributing)
+- [发布 Wiki Publishing](Publishing)

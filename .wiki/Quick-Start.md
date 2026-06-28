@@ -1,17 +1,96 @@
-# Quick Start
+# 快速开始 / Quick Start
+
+## 中文
+
+当你想从一个新 checkout 快速验证 DomainPostTrain 是否能跑通时，使用本页。
+
+中文提示：快速自检只验证链路是否可用，不代表已经完成真实模型训练。真实训练仍需要替换数据、配置基础模型、准备 GPU 和检查输出质量。
+
+## 前置条件
+
+- 与所选 PyTorch 构建兼容的 Python 环境。
+- 主仓库已经 clone 到本地。
+- 如果运行 smoke test 或训练，需要为 `outputs/` 预留磁盘空间。
+- 真实训练需要 CUDA GPU。CPU 只适合做链路 smoke test。
+
+## 1. 创建环境
+
+Linux/macOS:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Windows PowerShell:
+
+```powershell
+py -3.10 -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install --upgrade pip
+& .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+预期结果：环境中包含 PyTorch、Transformers、Datasets、PEFT、TRL、Flask 和默认流水线依赖。
+
+## 2. 复制默认配置
+
+```bash
+cp configs/domain_post_training.yaml configs/my_domain.yaml
+```
+
+Windows PowerShell:
+
+```powershell
+Copy-Item configs/domain_post_training.yaml configs/my_domain.yaml
+```
+
+优先编辑复制出来的文件。保留 `configs/domain_post_training.yaml` 作为基线示例。
+
+## 3. 运行 CPU smoke test
+
+```bash
+python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --smoke_test --device cpu
+```
+
+预期结果：
+
+- 在 `outputs/smoke/base_model` 下创建极小 smoke model。
+- 覆盖数据准备、PEFT adapter 保存、adapter merge 和报告生成链路。
+- 不下载默认基础模型。
+
+## 4. ML 依赖不可用时的静态检查
+
+```bash
+python -m compileall pipeline scripts serve_inference.py
+```
+
+预期结果：Python 文件没有语法错误。这个检查不证明 GPU 训练依赖已经安装完成。
+
+## 5. 下一步
+
+- 替换 mock 数据： [数据契约](Data-Contracts)
+- 修改路径或训练设置： [配置](Configuration)
+- 跑完整训练流程： [训练流水线](Training-Pipeline)
+- 排查失败： [故障排查](Troubleshooting)
+
+---
+
+## English
 
 Use this page when you want the shortest path from a fresh checkout to a verified DomainPostTrain setup.
 
-中文提示: 快速自检优先验证链路是否通, 不代表已经完成真实模型训练。
+Note: the quick smoke path verifies wiring only. It does not mean a real model has been trained. Real training still requires replacing data, configuring the base model, preparing GPU resources, and checking output quality.
 
 ## Prerequisites
 
-- Python environment compatible with the chosen PyTorch build.
-- Git checkout of the main repository.
+- A Python environment compatible with the chosen PyTorch build.
+- A local checkout of the main repository.
 - Enough disk space for `outputs/` if you run smoke tests or training.
-- CUDA GPU for real training. CPU is only practical for smoke wiring.
+- A CUDA GPU for real training. CPU is only practical for smoke wiring.
 
-## 1. Create an environment
+## 1. Create an Environment
 
 Linux/macOS:
 
@@ -32,13 +111,13 @@ py -3.10 -m venv .venv
 
 Expected result: the environment contains PyTorch, Transformers, Datasets, PEFT, TRL, Flask, and the other default pipeline dependencies.
 
-## 2. Copy the default config
+## 2. Copy the Default Config
 
 ```bash
 cp configs/domain_post_training.yaml configs/my_domain.yaml
 ```
 
-On Windows PowerShell:
+Windows PowerShell:
 
 ```powershell
 Copy-Item configs/domain_post_training.yaml configs/my_domain.yaml
@@ -46,7 +125,7 @@ Copy-Item configs/domain_post_training.yaml configs/my_domain.yaml
 
 Edit the copy first. Keep `configs/domain_post_training.yaml` as the baseline example.
 
-## 3. Run the CPU smoke test
+## 3. Run the CPU Smoke Test
 
 ```bash
 python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --smoke_test --device cpu
@@ -58,9 +137,7 @@ Expected result:
 - Dataset preparation, PEFT adapter saving, adapter merge, and report generation are exercised.
 - The command does not download the default base model.
 
-## 4. If ML dependencies are unavailable
-
-Run a static check:
+## 4. Static Check When ML Dependencies Are Unavailable
 
 ```bash
 python -m compileall pipeline scripts serve_inference.py
@@ -68,10 +145,9 @@ python -m compileall pipeline scripts serve_inference.py
 
 Expected result: Python files compile without syntax errors. This does not prove that GPU training dependencies are installed.
 
-## 5. Next pages
+## 5. Next Pages
 
 - Replace the mock data: [Data Contracts](Data-Contracts)
 - Change paths or training settings: [Configuration](Configuration)
 - Run the full training workflow: [Training Pipeline](Training-Pipeline)
 - Diagnose failures: [Troubleshooting](Troubleshooting)
-
