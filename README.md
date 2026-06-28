@@ -25,8 +25,14 @@ flowchart LR
     sftAdapter --> dpoStage
     dpoStage --> dpoAdapter["DPO adapter<br/>outputs/dpo_adapter"]
 
-    sftAdapter --> adapterChoice["Adapter 选择<br/>CPT / SFT / DPO"]
+    grpoRows["GRPO 奖励样例<br/>GRPO reward prompts<br/>data/grpo"] -.-> grpoStage["可选 GRPO<br/>optional reward optimization"]
+    dpoAdapter --> grpoStage
+    sftAdapter --> grpoStage
+    grpoStage --> grpoAdapter["GRPO adapter<br/>outputs/grpo_adapter"]
+
+    sftAdapter --> adapterChoice["Adapter 选择<br/>CPT / SFT / DPO / GRPO"]
     dpoAdapter --> adapterChoice
+    grpoAdapter --> adapterChoice
     adapterChoice --> mergedModel["合并模型<br/>Merged model<br/>outputs/merged_model"]
 
     evalSet["质量评估题集<br/>Quality questions<br/>data/eval"] --> qualityEval["训练后质量评估<br/>Post-training evaluation"]
@@ -42,7 +48,7 @@ flowchart LR
 DomainPostTrain 是一个通用领域后训练管道示例，用于把静态领域文档、事实问答样例和偏好样例组织成可复现的 LLM 后训练流程：
 
 ```text
-CPT -> Fact-SFT -> optional DPO -> merge -> quality eval -> inference/export
+CPT -> Fact-SFT -> optional DPO -> optional GRPO -> merge -> quality eval -> inference/export
 ```
 
 本仓库只包含静态 mock 数据。示例领域是 `AsterHelp`，一个虚构的内部支持知识库助手。训练真实模型前，请替换为你拥有合法使用权的领域文档、SFT 样例、DPO 偏好样例和质量评估题集。
@@ -53,6 +59,7 @@ CPT -> Fact-SFT -> optional DPO -> merge -> quality eval -> inference/export
 - PEFT LoRA/QLoRA 领域继续预训练式适配。
 - Fact-SFT assistant-only loss，只训练 assistant answer token。
 - 可选 DPO 偏好训练，输入为完整 `prompt` / `chosen` / `rejected`。
+- 可选 GRPO 奖励优化，输入为 prompt 和可计算奖励信号。
 - Adapter merge、训练后质量评估、单条推理、OpenAI-compatible Flask 服务。
 - 从 merge 后 Hugging Face 模型导出 GGUF；ONNX 导出作为可选路径。
 
@@ -77,6 +84,7 @@ serve_inference.py       # Flask + OpenAI-compatible API 服务
 data/cpt/source_documents/*.md      # CPT 源文档
 data/sft/*.jsonl                    # Fact-SFT 样例
 data/dpo/preference_examples.jsonl  # DPO 偏好样例
+data/grpo/reward_examples.jsonl     # GRPO 奖励样例
 data/eval/quality_questions.jsonl   # 训练后质量评估题集
 ```
 
@@ -84,6 +92,7 @@ data/eval/quality_questions.jsonl   # 训练后质量评估题集
 
 - SFT: 每行包含 `instruction` 和 `output`。
 - DPO: 每行包含 `prompt`、`chosen`、`rejected`，且 `chosen != rejected`。
+- GRPO: 每行包含 `prompt`，并至少包含 `reference_answer`、`required_terms`、`forbidden_terms` 或 `must_refuse` 之一。
 - Quality eval: 每行包含 `category` 和 `question`，`category` 支持 `domain_knowledge`、`safety_boundary`、`base_regression`。
 
 发布派生仓库前，不要把私有文档、客户数据、凭据、私有 system prompt、源代码或许可证受限语料放进 `data/`。更多说明见 `data/README.md` 和 `SECURITY.md`。
@@ -137,6 +146,7 @@ cp configs/domain_post_training.yaml configs/my_domain.yaml
 - `corpus.input_paths`: 你的 CPT 文档路径。
 - `fact_sft.input_paths`: 你的 Fact-SFT JSONL 路径。
 - `dpo.input_path`: 你的 DPO 偏好数据路径。
+- `grpo.input_path`: 你的 GRPO 奖励提示数据路径。
 - `eval.question_file`: 你的训练后质量评估题集。
 - `fact_sft.system_prompt`: 你的领域角色、知识边界和安全边界。
 - `base_model_repo_id` / `base_model_name_or_path`: 你的基座模型。
@@ -176,6 +186,7 @@ python scripts/training/train_pipeline.py --config configs/domain_post_training.
 - CPT adapter: `outputs/lora_adapter/`
 - Fact-SFT adapter: `outputs/fact_sft_adapter/`
 - DPO adapter: `outputs/dpo_adapter/`，仅当 `dpo.enabled=true`
+- GRPO adapter: `outputs/grpo_adapter/`，仅当 `grpo.enabled=true`
 - 合并模型: `outputs/merged_model/`
 - CPT 覆盖报告: `outputs/cpt_dataset/coverage_report.md`
 - 训练后质量评估报告: `outputs/eval/eval_report.md`
@@ -187,6 +198,7 @@ python scripts/training/train_pipeline.py --config configs/domain_post_training.
 python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --skip_cpt
 python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --skip_cpt --skip_sft
 python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --skip_cpt --skip_sft --skip_dpo
+python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --skip_cpt --skip_sft --skip_dpo --skip_grpo
 ```
 
 ### 验证集和质量评估
@@ -237,6 +249,59 @@ dpo:
 ```
 
 DPO 样例必须包含非空 `prompt`、`chosen`、`rejected`，并且 `chosen` 不能和 `rejected` 相同。
+
+### GRPO
+
+GRPO 在 DPO 或 Fact-SFT 之后运行，生成多条候选回答并用奖励函数优化策略。开启方式：
+
+```yaml
+grpo:
+  enabled: true
+  input_path: "data/grpo/reward_examples.jsonl"
+  num_generations: 4
+  builtin_rewards:
+    - "reference_overlap"
+    - "term_constraints"
+    - "refusal"
+    - "length_bounds"
+```
+
+也可以单独运行 GRPO：
+
+```bash
+python scripts/training/train_grpo.py --config configs/domain_post_training.yaml --max_steps 10
+```
+
+GRPO 样例必须包含 `prompt`，并至少提供一种奖励信号：`reference_answer`、`required_terms`、`forbidden_terms` 或 `must_refuse`。需要模型评分时，启用 `grpo.reward_judge` 并配置 OpenAI-compatible `base_url`、`model` 和 `api_key_env`。本地部署的评分模型也必须先暴露 `/v1/chat/completions`，不要把本地模型路径或 Hub ID 直接填进 GRPO 配置。
+
+示例：
+
+```yaml
+grpo:
+  reward_judge:
+    enabled: true
+    base_url: "http://localhost:8000/v1"
+    api_key_env: "GRPO_REWARD_JUDGE_API_KEY"
+    model: "local-reward-judge"
+```
+
+远程 GLM 或 DeepSeek 也使用同一组字段：
+
+```yaml
+# DeepSeek OpenAI-compatible judge
+reward_judge:
+  enabled: true
+  base_url: "https://api.deepseek.com"
+  api_key_env: "DEEPSEEK_API_KEY"
+  model: "deepseek-v4-flash"
+
+# GLM OpenAI-compatible judge
+reward_judge:
+  enabled: true
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key_env: "ZAI_API_KEY"
+  model: "glm-5.2"
+```
 
 ### 导出
 
@@ -319,7 +384,7 @@ python -m compileall pipeline scripts serve_inference.py
 DomainPostTrain is a general post-training pipeline example for organizing static domain documents, factual SFT examples, and preference examples into a reproducible LLM post-training workflow:
 
 ```text
-CPT -> Fact-SFT -> optional DPO -> merge -> quality eval -> inference/export
+CPT -> Fact-SFT -> optional DPO -> optional GRPO -> merge -> quality eval -> inference/export
 ```
 
 This repository ships only static mock data. The sample domain is `AsterHelp`, a fictional internal support knowledge-base assistant. Before training a real model, replace the mock corpus, SFT examples, DPO preference pairs, and quality evaluation questions with data you are licensed to use.
@@ -330,6 +395,7 @@ This repository ships only static mock data. The sample domain is `AsterHelp`, a
 - PEFT LoRA/QLoRA continued-pretraining-style domain adaptation.
 - Fact-SFT with assistant-only loss, so only assistant answer tokens are trained.
 - Optional DPO preference training from complete `prompt` / `chosen` / `rejected` rows.
+- Optional GRPO reward optimization from prompts plus computable reward signals.
 - Adapter merge, post-training quality evaluation, single-text inference, and an OpenAI-compatible Flask service.
 - GGUF export from the merged Hugging Face model; ONNX export is optional.
 
@@ -354,6 +420,7 @@ See `scripts/README.md` for script grouping and `configs/README.md` for the full
 data/cpt/source_documents/*.md      # CPT source documents
 data/sft/*.jsonl                    # Fact-SFT examples
 data/dpo/preference_examples.jsonl  # DPO preference examples
+data/grpo/reward_examples.jsonl     # GRPO reward examples
 data/eval/quality_questions.jsonl   # post-training quality evaluation questions
 ```
 
@@ -361,6 +428,7 @@ No mock data generator is included. The repository keeps only static example dat
 
 - SFT: each row has `instruction` and `output`.
 - DPO: each row has `prompt`, `chosen`, and `rejected`, with `chosen != rejected`.
+- GRPO: each row has `prompt` plus at least one of `reference_answer`, `required_terms`, `forbidden_terms`, or `must_refuse`.
 - Quality eval: each row has `category` and `question`; supported categories are `domain_knowledge`, `safety_boundary`, and `base_regression`.
 
 Before publishing a derivative repository, do not put private documents, customer data, credentials, private system prompts, source code, or license-restricted corpora under `data/`. See `data/README.md` and `SECURITY.md`.
@@ -414,6 +482,7 @@ Replace these first:
 - `corpus.input_paths`: your CPT documents.
 - `fact_sft.input_paths`: your Fact-SFT JSONL files.
 - `dpo.input_path`: your DPO preference data.
+- `grpo.input_path`: your GRPO reward-prompt data.
 - `eval.question_file`: your post-training quality evaluation question set.
 - `fact_sft.system_prompt`: your assistant role, knowledge boundary, and safety boundary.
 - `base_model_repo_id` / `base_model_name_or_path`: your base model.
@@ -453,6 +522,7 @@ Important outputs:
 - CPT adapter: `outputs/lora_adapter/`
 - Fact-SFT adapter: `outputs/fact_sft_adapter/`
 - DPO adapter: `outputs/dpo_adapter/`, only when `dpo.enabled=true`
+- GRPO adapter: `outputs/grpo_adapter/`, only when `grpo.enabled=true`
 - Merged model: `outputs/merged_model/`
 - CPT coverage report: `outputs/cpt_dataset/coverage_report.md`
 - Post-training quality evaluation report: `outputs/eval/eval_report.md`
@@ -464,6 +534,7 @@ Stage skipping is explicit:
 python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --skip_cpt
 python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --skip_cpt --skip_sft
 python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --skip_cpt --skip_sft --skip_dpo
+python scripts/training/train_pipeline.py --config configs/domain_post_training.yaml --skip_cpt --skip_sft --skip_dpo --skip_grpo
 ```
 
 ### Validation And Quality Evaluation
@@ -514,6 +585,59 @@ dpo:
 ```
 
 Every DPO row must contain non-empty `prompt`, `chosen`, and `rejected` fields, and `chosen` must differ from `rejected`.
+
+### GRPO
+
+GRPO runs after DPO or Fact-SFT, generates multiple candidate completions, and optimizes the policy with reward functions. Enable it in config:
+
+```yaml
+grpo:
+  enabled: true
+  input_path: "data/grpo/reward_examples.jsonl"
+  num_generations: 4
+  builtin_rewards:
+    - "reference_overlap"
+    - "term_constraints"
+    - "refusal"
+    - "length_bounds"
+```
+
+You can also run only the GRPO stage:
+
+```bash
+python scripts/training/train_grpo.py --config configs/domain_post_training.yaml --max_steps 10
+```
+
+Each GRPO row must contain `prompt` and at least one reward signal: `reference_answer`, `required_terms`, `forbidden_terms`, or `must_refuse`. For model-based scoring, enable `grpo.reward_judge` and configure an OpenAI-compatible `base_url`, `model`, and `api_key_env`. Locally deployed judge models must expose `/v1/chat/completions`; local model paths and Hub IDs are not accepted in GRPO config.
+
+Example:
+
+```yaml
+grpo:
+  reward_judge:
+    enabled: true
+    base_url: "http://localhost:8000/v1"
+    api_key_env: "GRPO_REWARD_JUDGE_API_KEY"
+    model: "local-reward-judge"
+```
+
+Remote GLM or DeepSeek judges use the same fields:
+
+```yaml
+# DeepSeek OpenAI-compatible judge
+reward_judge:
+  enabled: true
+  base_url: "https://api.deepseek.com"
+  api_key_env: "DEEPSEEK_API_KEY"
+  model: "deepseek-v4-flash"
+
+# GLM OpenAI-compatible judge
+reward_judge:
+  enabled: true
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key_env: "ZAI_API_KEY"
+  model: "glm-5.2"
+```
 
 ### Export
 

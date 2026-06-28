@@ -33,12 +33,16 @@ def write_model_card(path: Path, report: dict[str, Any]) -> None:
     sft_note = ""
     if report.get("fact_sft_applied"):
         sft_note = "\nPost-CPT alignment: assistant-only Fact-SFT for grounded QA, refusal behavior, unknown-boundary answers, and answer style.\n"
+    grpo_note = ""
+    if report.get("grpo_applied"):
+        grpo_note = "\nPost-preference alignment: GRPO reward optimization with configured prompt-level reward functions.\n"
     text = f"""# DomainPostTrain Merged PEFT Model
 
 Base model: {report["base_model_name_or_path"]}
 
-Training method: PEFT LoRA. CPT uses full-token causal language modeling. Fact-SFT, when present, uses assistant-only loss.
+Training method: PEFT LoRA. CPT uses full-token causal language modeling. Fact-SFT, when present, uses assistant-only loss. DPO and GRPO, when present, are optional alignment stages.
 {sft_note}
+{grpo_note}
 Training corpus: static domain documentation selected by the local pipeline. This model does not use RAG, retrieval, or runtime source-code access.
 
 GGUF note: GGUF is a post-training inference artifact. Train from Hugging Face/safetensors weights, merge adapters, then convert or quantize as needed.
@@ -60,8 +64,11 @@ def candidate_adapter_dirs(config: dict[str, Any]) -> list[tuple[str, Path]]:
     training_cfg = config.get("training", {})
     sft_cfg = config.get("fact_sft", {})
     dpo_cfg = config.get("dpo", {})
+    grpo_cfg = config.get("grpo", {})
 
     candidates: list[tuple[str, Path]] = []
+    if bool(grpo_cfg.get("enabled", False)):
+        candidates.append(("grpo.output_dir", resolve_training_path(grpo_cfg.get("output_dir"), "outputs/grpo_adapter")))
     if bool(dpo_cfg.get("enabled", False)):
         candidates.append(("dpo.output_dir", resolve_training_path(dpo_cfg.get("output_dir"), "outputs/dpo_adapter")))
     if bool(sft_cfg.get("enabled", False)):
@@ -121,6 +128,7 @@ def merge_adapter(config: dict[str, Any], adapter_dir: Path | None = None, outpu
     logger.info("Verifying merged model can load directly through the selected Transformers auto loader.")
     _ = load_transformers_model(str(output_dir), trust_remote_code=trust_remote_code, logger=logger)
     sft_metadata = read_json(adapter_dir / "fact_sft_training_metadata.json", default={})
+    grpo_metadata = read_json(adapter_dir / "grpo_training_metadata.json", default={})
     cpt_metadata = read_json(adapter_dir / "training_metadata.json", default={}) or read_json(
         adapter_dir / "base_cpt_training_metadata.json", default={}
     )
@@ -131,6 +139,7 @@ def merge_adapter(config: dict[str, Any], adapter_dir: Path | None = None, outpu
         "adapter_source": adapter_source,
         "merged_output_dir": str(output_dir),
         "fact_sft_applied": bool(sft_metadata),
+        "grpo_applied": bool(grpo_metadata),
         "cpt_adapter_metadata_present": bool(cpt_metadata),
         "dtype": str(dtype),
         "safe_serialization": safe_serialization,

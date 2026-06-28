@@ -208,6 +208,29 @@
 | `precompute_ref_log_probs` | 是否预计算 reference log probs。 | 数据量较大且硬件/TRL 版本支持时可实验开启。 |
 | `resume_from_checkpoint` | DPO 从 checkpoint 恢复训练。 | 中断续训时填写。 |
 
+## `grpo`
+
+This section controls optional GRPO reward optimization after DPO or Fact-SFT. Each input row needs `prompt` plus at least one reward signal such as `reference_answer`, `required_terms`, `forbidden_terms`, or `must_refuse`.
+
+| Parameter | Meaning | When to change |
+| --- | --- | --- |
+| `enabled` | Enables the GRPO stage. | Set `true` when you have reward prompts and want on-policy reward optimization. |
+| `input_path` | GRPO JSON/JSONL file or directory. | Change it when replacing reward-prompt data. |
+| `prepared_dataset_dir` | Output directory for the prepared GRPO dataset. | Change it to keep multiple experiments. |
+| `base_adapter_dir` | Starting adapter for GRPO, usually DPO output. If absent, the trainer falls back to Fact-SFT when available. | Change it when skipping earlier stages or using an existing adapter. |
+| `output_dir` | GRPO adapter output directory. | Change it to keep multiple runs. |
+| `require_base_adapter` | Requires an existing DPO or Fact-SFT adapter before GRPO. | Set `false` only for intentional base-model GRPO experiments or smoke wiring. |
+| `max_prompt_length` | Maximum prompt length passed to GRPO generation. | Lower it on OOM; raise it for long prompts. |
+| `max_completion_length` | Maximum generated completion length per rollout. | Lower it to reduce rollout cost; raise it for longer answers. |
+| `num_generations` | Number of completions sampled per prompt. | Increase for stronger relative reward signal; lower it for memory or speed. |
+| `temperature` / `top_p` | Rollout sampling controls. | Tune when completions are too deterministic or too noisy. |
+| `builtin_rewards` | Built-in reward functions: `reference_overlap`, `term_constraints`, `refusal`, `length_bounds`. | Enable only signals represented by your dataset fields. |
+| `reward_judge` | Optional single OpenAI-compatible external judge. Configure `enabled`, `base_url`, `api_key_env`, `model`, `score_range`, `timeout_seconds`, `max_retries`, and `prompt_template`. | Use when scalar rewards should come from a local or remote judge model exposed through `/v1/chat/completions`. |
+| `beta` | KL/reference regularization strength when supported by the installed TRL version. | Raise carefully when updates drift too far from the reference policy. |
+| `resume_from_checkpoint` | Checkpoint path for resumed GRPO. | Fill it after an interrupted run. |
+
+`reward_judge` standardizes model-based scoring through the OpenAI-compatible chat completions API. Local judges must first be served as an OpenAI-compatible HTTP service, for example with `base_url: "http://localhost:8000/v1"`. Hosted judges use the same fields; for example, DeepSeek can use `base_url: "https://api.deepseek.com"` with `api_key_env: "DEEPSEEK_API_KEY"`, and GLM can use `base_url: "https://open.bigmodel.cn/api/paas/v4"` with `api_key_env: "ZAI_API_KEY"`.
+
 ## `merge`
 
 这一段控制 adapter 合并为完整 Hugging Face 模型。
@@ -508,13 +531,36 @@ This section controls optional DPO preference training. Each input row needs `pr
 | `precompute_ref_log_probs` | Precomputes reference log probabilities. | Try it for larger datasets when your TRL version and hardware support it. |
 | `resume_from_checkpoint` | Checkpoint path for resumed DPO. | Fill it after an interrupted run. |
 
+## `grpo`
+
+This section controls optional GRPO reward optimization after DPO or Fact-SFT. Each input row needs `prompt` plus at least one reward signal such as `reference_answer`, `required_terms`, `forbidden_terms`, or `must_refuse`.
+
+| Parameter | Meaning | When to change |
+| --- | --- | --- |
+| `enabled` | Enables the GRPO stage. | Set `true` when you have reward prompts and want on-policy reward optimization. |
+| `input_path` | GRPO JSON/JSONL file or directory. | Change it when replacing reward-prompt data. |
+| `prepared_dataset_dir` | Output directory for the prepared GRPO dataset. | Change it to keep multiple experiments. |
+| `base_adapter_dir` | Starting adapter for GRPO, usually DPO output. If absent, the trainer falls back to Fact-SFT when available. | Change it when skipping earlier stages or using an existing adapter. |
+| `output_dir` | GRPO adapter output directory. | Change it to keep multiple runs. |
+| `require_base_adapter` | Requires an existing DPO or Fact-SFT adapter before GRPO. | Set `false` only for intentional base-model GRPO experiments or smoke wiring. |
+| `max_prompt_length` | Maximum prompt length passed to GRPO generation. | Lower it on OOM; raise it for long prompts. |
+| `max_completion_length` | Maximum generated completion length per rollout. | Lower it to reduce rollout cost; raise it for longer answers. |
+| `num_generations` | Number of completions sampled per prompt. | Increase for stronger relative reward signal; lower it for memory or speed. |
+| `temperature` / `top_p` | Rollout sampling controls. | Tune when completions are too deterministic or too noisy. |
+| `builtin_rewards` | Built-in reward functions: `reference_overlap`, `term_constraints`, `refusal`, `length_bounds`. | Enable only signals represented by your dataset fields. |
+| `reward_judge` | Optional single OpenAI-compatible external judge. Configure `enabled`, `base_url`, `api_key_env`, `model`, `score_range`, `timeout_seconds`, `max_retries`, and `prompt_template`. | Use when scalar rewards should come from a local or remote judge model exposed through `/v1/chat/completions`. |
+| `beta` | KL/reference regularization strength when supported by the installed TRL version. | Raise carefully when updates drift too far from the reference policy. |
+| `resume_from_checkpoint` | Checkpoint path for resumed GRPO. | Fill it after an interrupted run. |
+
+`reward_judge` standardizes model-based scoring through the OpenAI-compatible chat completions API. Local judges must first be served as an OpenAI-compatible HTTP service, for example with `base_url: "http://localhost:8000/v1"`. Hosted judges use the same fields; for example, DeepSeek can use `base_url: "https://api.deepseek.com"` with `api_key_env: "DEEPSEEK_API_KEY"`, and GLM can use `base_url: "https://open.bigmodel.cn/api/paas/v4"` with `api_key_env: "ZAI_API_KEY"`.
+
 ## `merge`
 
 This section controls merging an adapter into a full Hugging Face model.
 
 | Parameter | Meaning | When to change |
 | --- | --- | --- |
-| `adapter_dir` | Adapter path to merge. `null` auto-selects DPO, Fact-SFT, or CPT output in that order. | Fill it when you want to merge a specific adapter. |
+| `adapter_dir` | Adapter path to merge. `null` auto-selects GRPO, DPO, Fact-SFT, or CPT output in that order. | Fill it when you want to merge a specific adapter. |
 | `dtype` | Merge/load dtype, such as `float16`, `float32`, or `auto`. | Use `float16` for GPU inference; consider `float32` for CPU or ONNX workflows. |
 | `safe_serialization` | Save model weights with safetensors. | Keep `true`. |
 
@@ -602,6 +648,15 @@ To enable DPO:
 dpo:
   enabled: true
   input_path: "data/dpo/preference_examples.jsonl"
+```
+
+To enable GRPO:
+
+```yaml
+grpo:
+  enabled: true
+  input_path: "data/grpo/reward_examples.jsonl"
+  num_generations: 4
 ```
 
 <p align="right"><a href="#chinese"><strong>返回中文</strong></a></p>

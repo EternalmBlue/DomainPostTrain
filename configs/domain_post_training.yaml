@@ -172,6 +172,87 @@ dpo:
   precompute_ref_log_probs: false
   resume_from_checkpoint: null
 
+grpo:
+  enabled: false
+  input_path: "data/grpo/reward_examples.jsonl"
+  prepared_dataset_dir: "outputs/grpo_dataset"
+  base_adapter_dir: "outputs/dpo_adapter"
+  output_dir: "outputs/grpo_adapter"
+  require_base_adapter: true
+  max_seq_length: 1024
+  max_prompt_length: 768
+  max_completion_length: 256
+  validation_ratio: 0
+  seed: 42
+  epochs: 1
+  max_steps: null
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 0.0000005
+  weight_decay: 0.0
+  warmup_ratio: 0.10
+  lr_scheduler_type: "cosine"
+  optim: "paged_adamw_8bit"
+  max_grad_norm: 0.05
+  bf16: false
+  fp16: true
+  torch_dtype: "float16"
+  abort_on_nonfinite_grad_norm: false
+  logging_steps: 1
+  eval_steps: 20
+  save_steps: 50
+  save_total_limit: 2
+  num_generations: 4
+  temperature: 0.7
+  top_p: 0.95
+  repetition_penalty: 1.0
+  beta: 0.0
+  use_vllm: false
+  builtin_rewards:
+    - "reference_overlap"
+    - "term_constraints"
+    - "refusal"
+    - "length_bounds"
+  reward_judge:
+    enabled: false
+    base_url: null
+    api_key_env: "GRPO_REWARD_JUDGE_API_KEY"
+    model: null
+    score_range: [0.0, 1.0]
+    timeout_seconds: 30
+    max_retries: 2
+    prompt_template: >-
+      Evaluate the assistant completion against the prompt and reward signals.
+      Return only a JSON object with this shape: {{"score": <number>, "reason": "<brief reason>"}}.
+      The score must be between {score_min} and {score_max}.
+
+      Prompt:
+      {prompt}
+
+      Assistant completion:
+      {completion}
+
+      Reference answer:
+      {reference_answer}
+
+      Required terms:
+      {required_terms}
+
+      Forbidden terms:
+      {forbidden_terms}
+
+      Must refuse:
+      {must_refuse}
+
+      Category:
+      {category}
+  refusal_terms:
+    - "does not specify"
+    - "cannot"
+    - "not provide"
+  resume_from_checkpoint: null
+
 merge:
   adapter_dir: null
   dtype: "float16"

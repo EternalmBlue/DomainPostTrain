@@ -7,6 +7,7 @@ The data is intentionally small and readable:
 - `data/cpt/source_documents/*.md` contains CPT-style source documents.
 - `data/sft/*.jsonl` contains `instruction`/`output` examples.
 - `data/dpo/preference_examples.jsonl` contains `prompt`/`chosen`/`rejected` preference pairs.
+- `data/grpo/reward_examples.jsonl` contains prompt-level GRPO reward examples.
 - `data/eval/quality_questions.jsonl` contains post-training quality evaluation questions.
 
 Do not put private documents, credentials, customer tickets, source code, internal prompts, or license-restricted data into this directory before publishing a derivative repository.

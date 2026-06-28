@@ -4,7 +4,7 @@
 
 ```text
 scripts/
-  training/      CPT、Fact-SFT、DPO 和完整训练入口
+  training/      CPT、Fact-SFT、DPO、GRPO 和完整训练入口
   model_artifacts/  模型下载、adapter merge、ONNX 导出、GGUF 导出
   inference/     推理、训练后质量评估、可选 DPO rejected 答案填充
   diagnostics/   本地环境检查
@@ -15,7 +15,7 @@ scripts/
 
 English summary:
 
-- `training/`: CPT, Fact-SFT, DPO, and full pipeline training entrypoints.
+- `training/`: CPT, Fact-SFT, DPO, GRPO, and full pipeline training entrypoints.
 - `model_artifacts/`: model download, adapter merge, ONNX export, and GGUF export.
 - `inference/`: inference, post-training quality evaluation, and optional DPO rejected-answer filling.
 - `diagnostics/`: local environment checks.
