@@ -172,7 +172,7 @@
 
 ## `dpo`
 
-这一段控制可选 DPO 偏好训练。输入每行需要 `prompt`、`chosen`、`rejected`。
+这一段控制默认开启、可配置关闭的 DPO 偏好训练。输入每行需要 `prompt`、`chosen`、`rejected`。
 
 | 参数 | 说明 | 什么时候改 |
 | --- | --- | --- |
@@ -527,7 +527,7 @@ This section controls Fact-SFT. It uses assistant-only loss, so prompt tokens ar
 
 ## `dpo`
 
-This section controls optional DPO preference training. Each input row needs `prompt`, `chosen`, and `rejected`.
+This section controls DPO preference training, which is enabled by default and can be disabled explicitly. Each input row needs `prompt`, `chosen`, and `rejected`.
 
 | Parameter | Meaning | When to change |
 | --- | --- | --- |

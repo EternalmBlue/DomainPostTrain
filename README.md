@@ -49,7 +49,7 @@ flowchart LR
 DomainPostTrain 是一个通用领域后训练管道示例，用于把静态领域文档、事实问答样例和偏好样例组织成可复现的 LLM 后训练流程：
 
 ```text
-CPT -> Fact-SFT -> optional DPO -> optional GRPO -> merge -> quality eval -> inference/export
+CPT -> Fact-SFT -> DPO -> GRPO -> merge -> quality eval -> inference/export
 ```
 
 本仓库只包含静态 mock 数据。示例领域是 `AsterHelp`，一个虚构的内部支持知识库助手。训练真实模型前，请替换为你拥有合法使用权的领域文档、SFT 样例、DPO 偏好样例和质量评估题集。
@@ -394,8 +394,6 @@ python -m compileall pipeline scripts serve_inference.py
 
 [linux.do](https://linux.do/).
 
-代码和内置 mock 数据使用 Apache License 2.0 发布。你需要自行确认替换进来的基础模型、外部数据集或领域文档的许可证要求。
-
 <p align="right"><a href="#english"><strong>Switch to English</strong></a></p>
 
 <a id="english"></a>
@@ -405,7 +403,7 @@ python -m compileall pipeline scripts serve_inference.py
 DomainPostTrain is a general post-training pipeline example for organizing static domain documents, factual SFT examples, and preference examples into a reproducible LLM post-training workflow:
 
 ```text
-CPT -> Fact-SFT -> optional DPO -> optional GRPO -> merge -> quality eval -> inference/export
+CPT -> Fact-SFT -> DPO -> GRPO -> merge -> quality eval -> inference/export
 ```
 
 This repository ships only static mock data. The sample domain is `AsterHelp`, a fictional internal support knowledge-base assistant. Before training a real model, replace the mock corpus, SFT examples, DPO preference pairs, and quality evaluation questions with data you are licensed to use.

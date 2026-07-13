@@ -40,7 +40,7 @@ DomainPostTrain 是一个面向领域大模型后训练的可复现流水线。�
 ## 默认训练链路
 
 ```text
-CPT -> Fact-SFT -> optional DPO -> optional GRPO -> merge -> quality eval -> inference/export
+CPT -> Fact-SFT -> DPO -> GRPO -> merge -> quality eval -> inference/export
 ```
 
 仓库自带的 `AsterHelp` 是虚构领域的静态 mock 数据。训练真实模型或发布衍生项目之前，请替换 CPT 文档、SFT 样本、DPO 偏好样本、GRPO 奖励样本、质量评估问题和 system prompt，并确认数据来源、授权和安全边界。
@@ -106,7 +106,7 @@ This Wiki is Chinese-first by default. Each page also includes an English sectio
 ## Default Pipeline
 
 ```text
-CPT -> Fact-SFT -> optional DPO -> optional GRPO -> merge -> quality eval -> inference/export
+CPT -> Fact-SFT -> DPO -> GRPO -> merge -> quality eval -> inference/export
 ```
 
 The repository ships static mock data for the fictional `AsterHelp` domain. Before training or publishing a derivative project, replace the corpus, SFT rows, preference rows, reward prompts, quality evaluation questions, and system prompts with data you are licensed to use.
