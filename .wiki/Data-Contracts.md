@@ -105,7 +105,8 @@ data/grpo/reward_examples.jsonl
 基础要求：
 
 - 必须能构造出 prompt。
-- 至少存在一个奖励信号字段。
+- Judge 开启时允许只包含 prompt。
+- Judge 关闭时，每行必须至少存在一个与已启用内置奖励匹配的信号。
 
 Prompt 可以来自：
 
@@ -122,17 +123,21 @@ Prompt 可以来自：
 |---|---|
 | `reference_answer` | 参考答案，用于 overlap 类内置奖励，也会作为 judge 上下文。 |
 | `answer`, `solution`, `ground_truth`, `expected` | `reference_answer` 的可接受别名。 |
+| `trusted_context`, `judge_context` | 提供给 Judge 的可信依据；`context` / `input` 也会作为该字段的回退。 |
 | `required_terms` | 生成结果应包含的术语。 |
 | `must_include`, `keywords` | `required_terms` 的可接受别名。 |
 | `forbidden_terms` | 生成结果应避免的术语。 |
 | `must_not_include`, `banned_terms` | `forbidden_terms` 的可接受别名。 |
+| `forbidden_terms_mode` | `semantic`（默认）按语义判断，`literal` 按不区分大小写的字面命中判断。 |
 | `must_refuse` | 正确行为是否应该拒答。 |
 | `requires_refusal` | `must_refuse` 的可接受别名。 |
 | `min_completion_chars` | 可选的最短回答字符数。 |
 | `max_completion_chars` | 可选的最长回答字符数。 |
 | `category`, `type`, `task` | 可选分组标签，用于报告和 judge 上下文。 |
 
-这些字段用于内置规则奖励，也会作为外部 `reward_judge` 的评判上下文。模型型评分不读取本地模型路径或 Hub ID；需要通过 [GRPO 与 Reward Judge](GRPO-and-Reward-Judge) 配置 HTTP judge。
+内置奖励与字段严格对应：`reference_overlap` 使用 `reference_answer`；`term_constraints` 使用 required/forbidden terms；`refusal` 使用有效拒答要求；`length_bounds` 使用最小或最大字符数。四个内置奖励默认关闭，只在 `builtin_rewards` 中显式加入后生效。
+
+这些字段也会作为外部 `reward_judge` 的评判上下文。Judge 默认开启，使用严格 `grpo_judge_v2` 五维响应；没有参考答案或可信上下文时，`factual_grounding` 必须为 `null`。模型型评分不读取本地模型路径或 Hub ID，需要通过 [GRPO 与 Reward Judge](GRPO-and-Reward-Judge) 配置 HTTP Judge。
 
 ## 质量评估行
 
@@ -149,7 +154,7 @@ data/eval/quality_questions.jsonl
 | `category` | 必须是 `domain_knowledge`、`safety_boundary` 或 `base_regression`。 |
 | `question` | 训练后质量评估使用的提示，必须非空。 |
 
-质量评估不是训练验证集。它在训练或合并后运行，用来检查输出行为。
+质量评估不是训练验证集。它在训练或合并后运行，用来检查输出行为；当前规则是启发式 smoke gate，不是生产安全认证。
 
 ## 发布前检查
 
@@ -267,7 +272,8 @@ data/grpo/reward_examples.jsonl
 Required baseline:
 
 - A prompt must be constructible.
-- At least one reward signal must be present.
+- Prompt-only rows are valid when the judge is enabled.
+- With the judge disabled, every row needs a signal matching an enabled built-in reward.
 
 Prompt can come from:
 
@@ -284,17 +290,21 @@ Reward signal fields:
 |---|---|
 | `reference_answer` | Reference text for overlap-style scoring and judge context. |
 | `answer`, `solution`, `ground_truth`, `expected` | Accepted aliases for `reference_answer`. |
+| `trusted_context`, `judge_context` | Trusted judge evidence; `context` / `input` also act as fallbacks. |
 | `required_terms` | Terms the completion should include. |
 | `must_include`, `keywords` | Accepted aliases for `required_terms`. |
 | `forbidden_terms` | Terms the completion should avoid. |
 | `must_not_include`, `banned_terms` | Accepted aliases for `forbidden_terms`. |
+| `forbidden_terms_mode` | `semantic` (default) evaluates meaning; `literal` uses case-insensitive text occurrence. |
 | `must_refuse` | Whether the correct behavior is refusal. |
 | `requires_refusal` | Accepted alias for `must_refuse`. |
 | `min_completion_chars` | Optional lower length bound. |
 | `max_completion_chars` | Optional upper length bound. |
 | `category`, `type`, `task` | Optional grouping label for reports and judge context. |
 
-These fields drive built-in rule rewards and provide context for the external `reward_judge`. Model-based scoring does not load local model paths or Hub IDs; configure an HTTP judge through [GRPO And Reward Judge](GRPO-and-Reward-Judge).
+Built-in rewards map directly to fields: `reference_overlap` uses `reference_answer`; `term_constraints` uses required/forbidden terms; `refusal` uses a valid refusal requirement; and `length_bounds` uses a minimum or maximum character count. All four built-in rewards are disabled by default and activate only when explicitly listed in `builtin_rewards`.
+
+These fields also provide context for the external `reward_judge`. The judge is enabled by default and uses the strict five-dimension `grpo_judge_v2` response. Without a reference answer or trusted context, `factual_grounding` must be `null`. Model-based scoring does not load local model paths or Hub IDs; configure an HTTP judge through [GRPO And Reward Judge](GRPO-and-Reward-Judge).
 
 ## Quality Evaluation Rows
 
@@ -311,7 +321,7 @@ Fields:
 | `category` | Must be `domain_knowledge`, `safety_boundary`, or `base_regression`. |
 | `question` | Non-empty prompt used for post-training quality evaluation. |
 
-Quality evaluation is not a training validation set. It runs after training or merge to inspect output behavior.
+Quality evaluation is not a training validation set. It runs after training or merge to inspect output behavior; the current rules are a heuristic smoke gate, not production safety certification.
 
 ## Publication Checklist
 

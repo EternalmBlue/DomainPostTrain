@@ -27,26 +27,29 @@ python -m pip install -r requirements.txt
 Windows PowerShell:
 
 ```powershell
+python --version
 py -3.10 -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-预期结果：环境中包含 PyTorch、Transformers、Datasets、PEFT、TRL、Flask 和默认流水线依赖。
+如果 `python --version` 没有输出，可能命中了 WindowsApps 空壳；后续使用 `py` 或虚拟环境中的 `\.venv\Scripts\python.exe`。预期结果：环境中包含 PyTorch、Transformers、Datasets、PEFT、TRL、Flask 和默认流水线依赖。
 
 ## 2. 复制默认配置
 
 ```bash
-cp configs/domain_post_training.yaml configs/my_domain.yaml
+cp configs/domain_post_training.yaml configs/domain_post_training.local.yaml
 ```
 
 Windows PowerShell:
 
 ```powershell
-Copy-Item configs/domain_post_training.yaml configs/my_domain.yaml
+Copy-Item configs/domain_post_training.yaml configs/domain_post_training.local.yaml
 ```
 
-优先编辑复制出来的文件。保留 `configs/domain_post_training.yaml` 作为基线示例。
+编辑 `configs/domain_post_training.local.yaml`。该命名模式应被 Git 忽略，可用于保存明文 `grpo.reward_judge.api_key`。保留受跟踪的 `configs/domain_post_training.yaml` 作为无密钥模板。
+
+默认 DPO 和 GRPO 开启。真实训练前需要准备对应数据，并在 local YAML 中填写 Judge 的 `base_url`、`model`、`api_key`。推理型 Judge 建议使用 `max_tokens: 4096` 和 `timeout_seconds: 120`。
 
 ## 3. 运行 CPU smoke test
 
@@ -69,6 +72,15 @@ python -m compileall pipeline scripts serve_inference.py
 预期结果：Python 文件没有语法错误。这个检查不证明 GPU 训练依赖已经安装完成。
 
 ## 5. 下一步
+
+下载基础模型并运行完整链路：
+
+```bash
+python scripts/model_artifacts/download_models.py --config configs/domain_post_training.local.yaml
+python scripts/training/train_pipeline.py --config configs/domain_post_training.local.yaml
+```
+
+训练完成不等于达到生产质量。检查所有阶段的有限 `grad_norm`、LoRA tensor 实际变化、Judge reward 方差和 GRPO 截断率，并独立复核安全样例。
 
 - 替换 mock 数据： [数据契约](Data-Contracts)
 - 检查训练环境和基础模型： [操作手册](Operations-Runbook)
@@ -105,26 +117,29 @@ python -m pip install -r requirements.txt
 Windows PowerShell:
 
 ```powershell
+python --version
 py -3.10 -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Expected result: the environment contains PyTorch, Transformers, Datasets, PEFT, TRL, Flask, and the other default pipeline dependencies.
+If `python --version` prints nothing, Windows may be resolving the WindowsApps placeholder. Use `py` or `\.venv\Scripts\python.exe` for subsequent commands. Expected result: the environment contains PyTorch, Transformers, Datasets, PEFT, TRL, Flask, and the other default pipeline dependencies.
 
 ## 2. Copy the Default Config
 
 ```bash
-cp configs/domain_post_training.yaml configs/my_domain.yaml
+cp configs/domain_post_training.yaml configs/domain_post_training.local.yaml
 ```
 
 Windows PowerShell:
 
 ```powershell
-Copy-Item configs/domain_post_training.yaml configs/my_domain.yaml
+Copy-Item configs/domain_post_training.yaml configs/domain_post_training.local.yaml
 ```
 
-Edit the copy first. Keep `configs/domain_post_training.yaml` as the baseline example.
+Edit `configs/domain_post_training.local.yaml`. This name pattern should be ignored by Git and can hold the plaintext `grpo.reward_judge.api_key`. Keep tracked `configs/domain_post_training.yaml` as the key-free template.
+
+DPO and GRPO are enabled by default. Before real training, prepare both datasets and set the judge `base_url`, `model`, and `api_key` in the local YAML. For reasoning judges, start with `max_tokens: 4096` and `timeout_seconds: 120`.
 
 ## 3. Run the CPU Smoke Test
 
@@ -147,6 +162,15 @@ python -m compileall pipeline scripts serve_inference.py
 Expected result: Python files compile without syntax errors. This does not prove that GPU training dependencies are installed.
 
 ## 5. Next Pages
+
+Download the base model and run the complete chain:
+
+```bash
+python scripts/model_artifacts/download_models.py --config configs/domain_post_training.local.yaml
+python scripts/training/train_pipeline.py --config configs/domain_post_training.local.yaml
+```
+
+A completed run is not proof of production quality. Check finite `grad_norm` across all stages, real LoRA tensor changes, judge reward variance, and GRPO clipping, and independently review safety cases.
 
 - Replace the mock data: [Data Contracts](Data-Contracts)
 - Check the training environment and base model: [Operations Runbook](Operations-Runbook)

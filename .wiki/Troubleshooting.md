@@ -105,14 +105,14 @@ python scripts/diagnostics/check_training_environment.py
 只有在私有、离线、已确认数据可训练的环境里，才使用：
 
 ```bash
-python scripts/training/train_pipeline.py --config configs/my_domain.yaml --allow_unsafe_corpus
+python scripts/training/train_pipeline.py --config configs/domain_post_training.local.yaml --allow_unsafe_corpus
 ```
 
 ## 没有有效 GRPO reward examples
 
 适用：`scripts/training/train_grpo.py`。
 
-常见原因：每条 GRPO 行需要能构造出 prompt，并至少需要一个奖励信号字段。
+常见原因：Judge 已关闭，且数据行没有与已启用内置奖励匹配的信号。Judge 开启时，能构造 prompt 的 prompt-only 行是有效的。
 
 修复示例：
 
@@ -120,7 +120,7 @@ python scripts/training/train_pipeline.py --config configs/my_domain.yaml --allo
 {"prompt":"Answer from the documentation.","reference_answer":"Only documented facts.","required_terms":["documentation"]}
 ```
 
-确认每条数据至少包含以下字段之一：
+Judge 关闭时，确认每条数据至少包含一个与 `builtin_rewards` 匹配的字段：
 
 - `reference_answer`
 - `required_terms`
@@ -141,12 +141,12 @@ python scripts/training/train_pipeline.py --config configs/my_domain.yaml --allo
 
 适用：Fact-SFT、DPO、GRPO、merge。
 
-常见原因：后续阶段需要上游 adapter，但该 adapter 尚未生成，或配置中的阶段开关没有启用对应 adapter 自动选择。
+常见原因：后续阶段需要上游 adapter，但该 adapter 尚未生成，或者目录存在却不是完整 PEFT adapter。有效目录根部必须同时包含 `adapter_config.json`，以及 `adapter_model.safetensors` 或 `adapter_model.bin`。
 
 修复选项：
 
 - 先运行上游阶段。
-- 把 `base_adapter_dir` 指向已存在的 adapter。
+- 把 `base_adapter_dir` 指向完整 adapter。GRPO 会按“显式路径 -> DPO -> Fact-SFT -> CPT”回退，并在错误中列出每个无效目录缺少的文件。
 - 合并特定 adapter 时使用 `merge.adapter_dir` 或 `merge_adapter.py --adapter_dir`。
 - 只有在明确实验需要时，才把相关 `require_*_adapter` 选项设为 `false`。
 
@@ -154,9 +154,17 @@ python scripts/training/train_pipeline.py --config configs/my_domain.yaml --allo
 
 适用：`grpo.reward_judge.enabled=true` 的 GRPO。
 
-常见原因：`api_key_env` 指定的环境变量没有设置。
+常见原因：Git 忽略的 local YAML 中 `api_key` 为空，同时 `api_key_env` 指定的可选回退环境变量也没有设置。
 
 修复：
+
+```yaml
+grpo:
+  reward_judge:
+    api_key: "your-key"
+```
+
+`api_key` 是明文凭据，只能放在不提交的 `configs/domain_post_training.local.yaml`。如果选择环境变量回退：
 
 ```bash
 export GRPO_REWARD_JUDGE_API_KEY="your-key"
@@ -168,19 +176,58 @@ Windows PowerShell:
 $env:GRPO_REWARD_JUDGE_API_KEY = "your-key"
 ```
 
-## Reward judge 响应必须包含数值 score
+## Reward judge 响应不符合 `grpo_judge_v2`
 
 适用：GRPO 外部 reward judge。
 
-常见原因：judge 返回了纯文本、没有 JSON 对象的 markdown、字符串 score，或遗漏 `score`。
+常见原因：Judge 返回纯文本、Markdown、旧的标量 `score` 格式、额外/缺失字段、越界维度或未知违规标识。
 
 修复：更新 judge prompt 或服务，使 OpenAI-compatible 响应的 `choices[0].message.content` 包含类似 JSON：
 
 ```json
-{"score": 0.8, "reason": "The answer follows the reference and avoids forbidden terms."}
+{"schema_version":"grpo_judge_v2","dimension_scores":{"task_fulfillment":0.8,"factual_grounding":null,"explicit_constraints":1.0,"safety_refusal":1.0,"relevance_clarity":0.8},"violations":[],"reason":"The response follows the supplied constraints."}
 ```
 
-程序只读取 `score`。HTTP body 直接返回 `{"score": 0.8}` 不够；它必须放在 chat completions envelope 的 assistant content 中。详见 [GRPO 与 Reward Judge](GRPO-and-Reward-Judge)。
+严格 JSON 必须放在 chat completions envelope 的 assistant content 中；HTTP body 直接返回该对象不够。本地代码会对五维分数加权并应用违规硬上限，不读取 Judge 提供的最终 `score`。详见 [GRPO 与 Reward Judge](GRPO-and-Reward-Judge)。
+
+## Reward judge 的 `message.content` 为空
+
+适用：会先输出内部推理的外部 Judge。
+
+常见原因：较小的输出预算全部消耗在服务的 `reasoning_content`，没有剩余 token 返回最终 v2 JSON；或超时设置过短。
+
+修复：
+
+```yaml
+grpo:
+  reward_judge:
+    max_tokens: 4096
+    timeout_seconds: 120
+```
+
+这里的 `max_tokens` 是 Judge 响应预算。增加 `grpo.max_completion_length` 只会增加被训练策略的候选长度，不能修复 Judge 空响应。
+
+## `grad_norm` 是 NaN 或 Inf
+
+适用：CPT、Fact-SFT、DPO、GRPO。
+
+不要因为 loss 有限或报告显示 completed 就忽略它；非有限梯度可能意味着 adapter 没有有效更新。保持以下默认：
+
+```yaml
+training:
+  bf16: auto
+  fp16: auto
+  torch_dtype: auto
+  abort_on_nonfinite_grad_norm: true
+```
+
+Fact-SFT、DPO、GRPO 使用相同的阶段级设置。支持 BF16 时优先 BF16；仍失败时检查学习率、量化、loss scaling、数据异常和依赖版本。重跑后对比相邻 adapter 的 LoRA tensor，确认权重实际变化。
+
+## GRPO reward 很低、近似常数或截断率很高
+
+检查训练日志和报告中的 Judge reward 均值/方差以及 `completions/clipped_ratio`。近似常数的 reward 无法产生有效排序；高截断表示 Judge 持续看到不完整候选。
+
+优先检查 Judge rubric 与训练数据是否匹配，并改善 EOS/停止行为。只有在完整回答确实需要更多空间时才提高 `grpo.max_completion_length`。不要用 Judge 的 `max_tokens` 调整策略候选长度。
 
 ## Flask 服务启动了，但 `/v1/chat/completions` 失败
 
@@ -320,14 +367,14 @@ Fix:
 Use this only in a private, offline, approved training environment:
 
 ```bash
-python scripts/training/train_pipeline.py --config configs/my_domain.yaml --allow_unsafe_corpus
+python scripts/training/train_pipeline.py --config configs/domain_post_training.local.yaml --allow_unsafe_corpus
 ```
 
 ## No Valid GRPO Reward Examples
 
 Applies to: `scripts/training/train_grpo.py`.
 
-Likely cause: each GRPO row needs a constructible prompt and at least one reward signal.
+Likely cause: the judge is disabled and rows have no signal matching an enabled built-in reward. With the judge enabled, prompt-only rows are valid when a prompt can be constructed.
 
 Fix:
 
@@ -335,7 +382,7 @@ Fix:
 {"prompt":"Answer from the documentation.","reference_answer":"Only documented facts.","required_terms":["documentation"]}
 ```
 
-Verify that each row has at least one of:
+With the judge disabled, verify that every row has a field matching `builtin_rewards`:
 
 - `reference_answer`
 - `required_terms`
@@ -356,12 +403,12 @@ Fix: ensure every row has non-empty `prompt`, `chosen`, and `rejected`, and that
 
 Applies to: Fact-SFT, DPO, GRPO, merge.
 
-Likely cause: a later stage expects an upstream adapter that has not been produced, or stage switches do not select the adapter you expected.
+Likely cause: an upstream adapter has not been produced, or a directory exists but is not a complete PEFT adapter. A valid root contains `adapter_config.json` plus either `adapter_model.safetensors` or `adapter_model.bin`.
 
 Fix options:
 
 - Run the upstream stage first.
-- Point `base_adapter_dir` to an existing adapter.
+- Point `base_adapter_dir` to a complete adapter. GRPO falls back through explicit path -> DPO -> Fact-SFT -> CPT and reports missing files for invalid candidates.
 - For a specific merge, use `merge.adapter_dir` or `merge_adapter.py --adapter_dir`.
 - Set the relevant `require_*_adapter` option to `false` only for intentional experiments.
 
@@ -369,9 +416,17 @@ Fix options:
 
 Applies to: GRPO with `grpo.reward_judge.enabled=true`.
 
-Likely cause: the environment variable named by `api_key_env` is not set.
+Likely cause: `api_key` is empty in the Git-ignored local YAML and the optional environment fallback named by `api_key_env` is also unset.
 
 Fix:
+
+```yaml
+grpo:
+  reward_judge:
+    api_key: "your-key"
+```
+
+`api_key` is plaintext and belongs only in the untracked `configs/domain_post_training.local.yaml`. If you choose the environment fallback:
 
 ```bash
 export GRPO_REWARD_JUDGE_API_KEY="your-key"
@@ -383,19 +438,58 @@ Windows PowerShell:
 $env:GRPO_REWARD_JUDGE_API_KEY = "your-key"
 ```
 
-## Reward Judge Response Must Contain Numeric Score
+## Reward Judge Response Does Not Match `grpo_judge_v2`
 
 Applies to: GRPO external reward judge.
 
-Likely cause: the judge returned prose, markdown without a JSON object, a string score, or omitted `score`.
+Likely cause: the judge returned prose, Markdown, the legacy scalar `score` format, missing or extra fields, out-of-range dimensions, or unknown violations.
 
 Fix: update the judge prompt or service so `choices[0].message.content` in the OpenAI-compatible response contains JSON like:
 
 ```json
-{"score": 0.8, "reason": "The answer follows the reference and avoids forbidden terms."}
+{"schema_version":"grpo_judge_v2","dimension_scores":{"task_fulfillment":0.8,"factual_grounding":null,"explicit_constraints":1.0,"safety_refusal":1.0,"relevance_clarity":0.8},"violations":[],"reason":"The response follows the supplied constraints."}
 ```
 
-The program reads only `score`. Returning `{"score": 0.8}` as the raw HTTP body is not enough; it must appear inside the assistant content of a chat completions envelope. See [GRPO And Reward Judge](GRPO-and-Reward-Judge).
+Strict JSON must appear inside assistant content in the chat completions envelope; returning it as the raw HTTP body is insufficient. Local code weights dimensions and applies violation caps; it does not read a final judge `score`. See [GRPO And Reward Judge](GRPO-and-Reward-Judge).
+
+## Reward Judge `message.content` Is Empty
+
+Applies to: external judges that produce internal reasoning before the final answer.
+
+Likely cause: a small output budget was consumed by provider `reasoning_content`, leaving no tokens for final v2 JSON, or the timeout is too short.
+
+Fix:
+
+```yaml
+grpo:
+  reward_judge:
+    max_tokens: 4096
+    timeout_seconds: 120
+```
+
+This `max_tokens` is the judge response budget. Raising `grpo.max_completion_length` only lengthens policy candidates and cannot fix an empty judge response.
+
+## `grad_norm` Is NaN or Inf
+
+Applies to: CPT, Fact-SFT, DPO, GRPO.
+
+Do not ignore this because loss is finite or the report says completed; non-finite gradients can mean the adapter did not update meaningfully. Keep these defaults:
+
+```yaml
+training:
+  bf16: auto
+  fp16: auto
+  torch_dtype: auto
+  abort_on_nonfinite_grad_norm: true
+```
+
+Fact-SFT, DPO, and GRPO use matching stage-level fields. BF16 is preferred when supported. If failure remains, inspect learning rate, quantization, loss scaling, anomalous rows, and dependency versions. After rerunning, compare LoRA tensors across adjacent adapters to confirm real changes.
+
+## GRPO Reward Is Low, Nearly Constant, or Highly Clipped
+
+Inspect judge reward mean/variance and `completions/clipped_ratio` in logs and reports. Near-constant rewards provide no useful ranking, while high clipping means the judge repeatedly sees incomplete candidates.
+
+First verify rubric/data alignment and improve EOS/stop behavior. Raise `grpo.max_completion_length` only when complete answers genuinely require more room. Do not use judge `max_tokens` to tune policy candidate length.
 
 ## Flask Service Starts but `/v1/chat/completions` Fails
 
