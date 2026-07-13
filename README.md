@@ -390,6 +390,12 @@ python -m compileall pipeline scripts serve_inference.py
 
 代码和内置 mock 数据使用 Apache License 2.0 发布。你需要自行确认替换进来的基础模型、外部数据集或领域文档的许可证要求。
 
+### 友链
+
+[linux.do](https://linux.do/).
+
+代码和内置 mock 数据使用 Apache License 2.0 发布。你需要自行确认替换进来的基础模型、外部数据集或领域文档的许可证要求。
+
 <p align="right"><a href="#english"><strong>Switch to English</strong></a></p>
 
 <a id="english"></a>
