@@ -37,6 +37,7 @@ from pipeline.dpo import prepare_dpo_dataset, train_dpo
 from pipeline.evaluation import evaluate
 from pipeline.fact_sft import prepare_fact_sft_dataset, train_fact_sft
 from pipeline.grpo import prepare_grpo_dataset, train_grpo
+from pipeline.grpo_core import validate_grpo_reward_configuration
 from pipeline.adapter_merge import merge_adapter
 from pipeline.corpus_safety import run_preflight, write_markdown_report
 from pipeline.utils import (
@@ -320,6 +321,9 @@ def main() -> int:
             skip_sft = False
             skip_dpo = True
             skip_grpo = True
+
+        if bool(active_config.get("grpo", {}).get("enabled", False)) and not skip_grpo:
+            validate_grpo_reward_configuration(active_config.get("grpo", {}))
 
         if not skip_cpt:
             if not args.skip_preflight:

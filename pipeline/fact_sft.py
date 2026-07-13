@@ -442,7 +442,7 @@ def train_fact_sft(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
     trainer.save_state()
 
     save_yaml(output_dir / "config_snapshot.yaml", config_without_private_keys(config))
-    copy_file(config_path, output_dir / "original_config.yaml")
+    save_yaml(output_dir / "original_config.yaml", config_without_private_keys(config))
     if (base_adapter_dir / "training_metadata.json").exists():
         copy_file(base_adapter_dir / "training_metadata.json", output_dir / "base_cpt_training_metadata.json")
     write_json(output_dir / "training_args.json", training_args.to_dict())

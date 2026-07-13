@@ -1,5 +1,6 @@
 outputs/
 models/
+configs/*.local.yaml
 .venv/
 __pycache__/
 *.pyc

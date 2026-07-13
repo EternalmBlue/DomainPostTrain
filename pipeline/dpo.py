@@ -394,7 +394,7 @@ def train_dpo(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
     trainer.save_state()
 
     save_yaml(output_dir / "config_snapshot.yaml", config_without_private_keys(config))
-    copy_file(config_path, output_dir / "original_config.yaml")
+    save_yaml(output_dir / "original_config.yaml", config_without_private_keys(config))
     if (base_adapter_dir / "fact_sft_training_metadata.json").exists():
         copy_file(base_adapter_dir / "fact_sft_training_metadata.json", output_dir / "base_fact_sft_training_metadata.json")
     elif (base_adapter_dir / "training_metadata.json").exists():
