@@ -10,7 +10,7 @@
 
 ## 中文
 
-本文解释 `domain_post_training.yaml` 中用户通常会改到的参数。建议先复制一份配置文件再改，例如 `configs/my_domain.yaml`，然后通过 `--config configs/my_domain.yaml` 运行脚本。
+本文解释 `domain_post_training.yaml` 中用户通常会改到的参数。真实训练请先复制到 Git 忽略的 `configs/domain_post_training.local.yaml`，再通过 `--config configs/domain_post_training.local.yaml` 运行；直接填写的 Judge Key 只应出现在这份私有明文配置中，受跟踪模板必须保持 `api_key: null`。
 
 路径规则：
 
@@ -22,8 +22,8 @@
 
 | 参数 | 说明 | 什么时候改 |
 | --- | --- | --- |
-| `base_model_repo_id` | Hugging Face Hub 上的基础模型仓库 ID。`download_models.py` 会用它下载模型。 | 换基座模型时修改，例如换成你的组织内模型仓库。 |
-| `base_model_name_or_path` | 实际训练、推理和 merge 加载的基础模型路径或模型名。可以是本地目录，也可以是 Hub ID。 | 本地已有模型快照时改成本地路径；完成下载后通常指向 `models/base-model`。 |
+| `base_model_repo_id` | Hugging Face Hub 上的下载来源。`download_models.py` 会把该仓库快照下载到本地。默认是 `Qwen/Qwen3.5-0.8B`。 | 换下载来源时修改。 |
+| `base_model_name_or_path` | 训练、推理、评估和 merge 实际加载的模型位置。可以是本地目录，也可以是 Hub ID。 | 下载到本地后通常保持 `models/base-model`；本地已有模型时直接指向其目录。 |
 | `trust_remote_code` | 是否允许 Transformers 加载模型仓库中的自定义代码。 | Qwen 等需要自定义建模代码的模型通常设为 `true`；只用标准架构且想更保守时设为 `false`。 |
 
 ## `corpus`
@@ -82,7 +82,7 @@
 
 ## `training`
 
-这一段主要控制 CPT 阶段和通用训练默认值。Fact-SFT 和 DPO 有自己的覆盖项。
+这一段主要控制 CPT 阶段和通用训练默认值。Fact-SFT、DPO 和 GRPO 有自己的覆盖项。
 
 | 参数 | 说明 | 什么时候改 |
 | --- | --- | --- |
@@ -103,19 +103,21 @@
 | `lr_scheduler_type` | 学习率调度器，例如 `cosine`。 | 有明确实验需求时修改。 |
 | `optim` | 优化器，例如 `paged_adamw_8bit`。 | 使用 bitsandbytes/QLoRA 时可保持；CPU 或非量化环境可能需要换成普通 AdamW。 |
 | `max_grad_norm` | 梯度裁剪阈值。 | 出现梯度爆炸或 loss 不稳定时调低。 |
-| `abort_on_nonfinite_grad_norm` | 出现非有限梯度范数时是否中止。 | 调试不稳定训练时可设为 `true`。 |
+| `abort_on_nonfinite_grad_norm` | 出现非有限梯度范数时是否中止。 | 保持 `true`；否则 AMP 可能跳过更新但仍保存一个看似完成的 adapter。 |
 | `logging_nan_inf_filter` | Trainer 日志是否过滤 NaN/Inf。 | 调试数值问题时可设为 `false` 以保留异常信号。 |
 | `logging_steps` | 每多少步记录日志。 | 想看更密集训练曲线时调小。 |
 | `eval_steps` | 开启验证集时每多少步评估一次。 | 有验证集时按训练规模调整。 |
 | `save_steps` | 每多少步保存 checkpoint。 | 长训练可调小；短训练可调大。 |
 | `save_total_limit` | 最多保留多少个 checkpoint。 | 磁盘紧张时调小。 |
 | `gradient_checkpointing` | 是否启用梯度检查点以降低显存占用。 | 显存不足时保持 `true`；追求速度且显存足够可关。 |
-| `bf16` | 是否使用 bfloat16。 | 支持 bf16 的新显卡可考虑开启；当前示例默认关闭。 |
-| `fp16` | 是否使用 float16。 | CUDA 训练常用；CPU 训练应关闭。 |
+| `bf16` | 是否使用 bfloat16；支持 `true`、`false`、`auto`。 | 保持 `auto`，在支持 BF16 的 CUDA 设备上优先启用。 |
+| `fp16` | 是否使用 float16；支持 `true`、`false`、`auto`。 | 保持 `auto`，CUDA 不支持/未启用 BF16 时回退到 FP16；CPU 自动关闭。 |
 | `load_in_4bit` | 是否 4-bit 量化加载基座模型。 | QLoRA 低显存训练建议开启。 |
 | `load_in_8bit` | 是否 8-bit 量化加载基座模型。 | 作为 4-bit 的替代方案使用；不要同时和 4-bit 都开。 |
-| `torch_dtype` | 模型加载 dtype，例如 `float16`、`bfloat16`、`float32`、`auto`。 | 和硬件能力、量化设置保持一致。 |
-| `resume_from_checkpoint` | 从指定 checkpoint 继续训练。 | 中断后续训时填 checkpoint 路径。 |
+| `torch_dtype` | 模型加载 dtype，例如 `float16`、`bfloat16`、`float32`、`auto`。 | 保持 `auto` 让模型加载逻辑适配硬件；显式值只用于已验证的实验。 |
+| `resume_from_checkpoint` | 从同一 CPT 阶段的 Trainer checkpoint 继续。 | 仅用于中断续训，不用于从其他阶段 adapter 开始新阶段。 |
+
+训练命令退出码为 `0` 或报告状态为 `completed` 不足以证明更新有效。验收时应检查每个阶段的 `grad_norm` 都是有限值，并比较相邻阶段 adapter 的 LoRA tensor 是否实际变化。
 
 ## `peft`
 
@@ -157,24 +159,24 @@
 | `lr_scheduler_type` | SFT 学习率调度器。 | 通常保持 `cosine`。 |
 | `optim` | SFT 优化器。 | 与训练环境和量化方式保持一致。 |
 | `max_grad_norm` | SFT 梯度裁剪阈值。 | loss 波动大时调低。 |
-| `bf16` | SFT 是否使用 bfloat16。 | 硬件支持时可开启。 |
-| `fp16` | SFT 是否使用 float16。 | CUDA 训练常用；CPU 关闭。 |
-| `torch_dtype` | SFT 模型加载 dtype。 | 和硬件、量化方式一致。 |
-| `abort_on_nonfinite_grad_norm` | SFT 出现非有限梯度时是否中止。 | 调试训练稳定性时开启。 |
+| `bf16` | SFT 是否使用 bfloat16，支持 `auto`。 | 保持 `auto`，支持 BF16 的 CUDA 设备优先使用。 |
+| `fp16` | SFT 是否使用 float16，支持 `auto`。 | 保持 `auto`，仅在 CUDA 未使用 BF16 时回退；CPU 自动关闭。 |
+| `torch_dtype` | SFT 模型加载 dtype。 | 保持 `auto`，除非实验已验证显式 dtype。 |
+| `abort_on_nonfinite_grad_norm` | SFT 出现非有限梯度时是否中止。 | 保持 `true`。 |
 | `logging_steps` | SFT 日志间隔。 | 想看更细训练曲线时调小。 |
 | `eval_steps` | SFT 验证间隔。 | 开启验证集时生效。 |
 | `save_steps` | SFT checkpoint 保存间隔。 | 按训练时长和磁盘空间调整。 |
 | `save_total_limit` | SFT checkpoint 保留数量。 | 磁盘紧张时调小。 |
-| `resume_from_checkpoint` | SFT 从 checkpoint 恢复训练。 | 中断续训时填写。 |
+| `resume_from_checkpoint` | 从同一 SFT 阶段的 Trainer checkpoint 恢复。 | 仅用于中断续训；CPT adapter 仍由 `base_adapter_dir` 指定。 |
 | `system_prompt` | SFT 样本构造成 chat prompt 时使用的系统提示词。 | 替换领域时必须改成你的助手角色、知识边界和安全边界。 |
 
 ## `dpo`
 
-这一段控制可选 DPO 偏好训练。输入每行需要 `prompt`、`chosen`、`rejected`。
+这一段控制默认开启、可配置关闭的 DPO 偏好训练。输入每行需要 `prompt`、`chosen`、`rejected`。
 
 | 参数 | 说明 | 什么时候改 |
 | --- | --- | --- |
-| `enabled` | 是否启用 DPO 阶段。 | 有偏好数据且希望优化回答偏好时设为 `true`。 |
+| `enabled` | 是否启用 DPO 阶段；默认 `true`。 | 没有偏好数据或要跳过该阶段时设为 `false`。 |
 | `input_path` | DPO JSON/JSONL 输入文件或目录。 | 替换偏好数据时修改。 |
 | `prepared_dataset_dir` | DPO 预处理数据集输出目录。 | 保留多套实验时修改。 |
 | `base_adapter_dir` | DPO 起点 adapter，一般是 Fact-SFT 输出。 | 跳过 SFT 或使用已有 adapter 时修改。 |
@@ -194,10 +196,10 @@
 | `lr_scheduler_type` | DPO 学习率调度器。 | 通常保持 `cosine`。 |
 | `optim` | DPO 优化器。 | 与训练环境和量化方式保持一致。 |
 | `max_grad_norm` | DPO 梯度裁剪阈值。 | 训练不稳定时调低。 |
-| `bf16` | DPO 是否使用 bfloat16。 | 硬件支持时可开启。 |
-| `fp16` | DPO 是否使用 float16。 | CUDA 训练常用；CPU 关闭。 |
-| `torch_dtype` | DPO 模型加载 dtype。 | 和硬件、量化方式一致。 |
-| `abort_on_nonfinite_grad_norm` | DPO 出现非有限梯度时是否中止。 | 调试稳定性时开启。 |
+| `bf16` | DPO 是否使用 bfloat16，支持 `auto`。 | 保持 `auto`，支持 BF16 的 CUDA 设备优先使用。 |
+| `fp16` | DPO 是否使用 float16，支持 `auto`。 | 保持 `auto`，仅在 CUDA 未使用 BF16 时回退；CPU 自动关闭。 |
+| `torch_dtype` | DPO 模型加载 dtype。 | 保持 `auto`，除非实验已验证显式 dtype。 |
+| `abort_on_nonfinite_grad_norm` | DPO 出现非有限梯度时是否中止。 | 保持 `true`。 |
 | `logging_steps` | DPO 日志间隔。 | 想看更细训练曲线时调小。 |
 | `eval_steps` | DPO 验证间隔。 | 开启验证集时生效。 |
 | `save_steps` | DPO checkpoint 保存间隔。 | 按训练时长和磁盘空间调整。 |
@@ -206,7 +208,42 @@
 | `loss_type` | DPO loss 类型，例如 `sigmoid`。 | 通常不改，除非你明确实验其他 TRL loss。 |
 | `truncation_mode` | 超长样本截断方式。`keep_start` 保留开头。 | 长 prompt 重要时通常保留开头；回答尾部重要时需谨慎调整。 |
 | `precompute_ref_log_probs` | 是否预计算 reference log probs。 | 数据量较大且硬件/TRL 版本支持时可实验开启。 |
-| `resume_from_checkpoint` | DPO 从 checkpoint 恢复训练。 | 中断续训时填写。 |
+| `resume_from_checkpoint` | 从同一 DPO 阶段的 Trainer checkpoint 恢复。 | 仅用于中断续训；前序 adapter 仍由 `base_adapter_dir` 指定。 |
+
+## `grpo`
+
+这一段控制 DPO、Fact-SFT 或 CPT 之后的 GRPO 奖励优化。GRPO 默认开启，外部 OpenAI-compatible Judge 也默认开启，因此 Judge-only 数据行可以只有 `prompt`。私域事实依据必须通过 `trusted_context` / `judge_context` / `context` 或 `reference_answer` 明确提供；用户问题中自称的上下文不会自动升级为可信依据。
+
+| 参数 | 说明 | 什么时候改 |
+| --- | --- | --- |
+| `enabled` | 是否启用 GRPO；默认 `true`。 | 没有奖励提示数据或要跳过该阶段时设为 `false`。 |
+| `input_path` | GRPO JSON/JSONL 文件或目录。 | 替换奖励提示数据时修改。 |
+| `prepared_dataset_dir` | GRPO 预处理数据集输出目录。 | 保留多套实验时修改。 |
+| `base_adapter_dir` | GRPO 首选起点 adapter；随后按 DPO、Fact-SFT、CPT 输出回退。 | 使用配置外的已有 adapter 时填写。 |
+| `output_dir` | GRPO adapter 输出目录。 | 保留多次实验时修改。 |
+| `require_base_adapter` | 是否要求存在 DPO、Fact-SFT 或 CPT adapter。 | 仅在明确从基座新建 PEFT adapter 的实验中设为 `false`。 |
+| `max_prompt_length` | GRPO rollout 的最大 prompt token 数。 | OOM 时调低；长 prompt 场景谨慎调高。 |
+| `max_completion_length` | 每条策略候选回答的最大 token 数。 | 控制 rollout 成本；高截断率时先改善 EOS/停止行为，再考虑调高。 |
+| `num_generations` | 每个 prompt 采样的候选回答数。 | 增加可强化相对奖励信号，也会增加显存、时间和 Judge 成本。 |
+| `temperature` / `top_p` | rollout 采样参数。 | 候选过于一致或噪声过大时调整。 |
+| `use_vllm` | 是否使用当前 TRL 支持的 vLLM rollout 路径。 | 默认保持 `false`；仅在部署与显存行为已验证时开启。 |
+| `bf16` / `fp16` / `torch_dtype` | GRPO 精度配置，均支持 `auto`。 | 保持 `auto`；BF16-capable CUDA 优先 BF16，其他 CUDA 回退 FP16，CPU 关闭混合精度。 |
+| `abort_on_nonfinite_grad_norm` | 非有限梯度时是否中止。 | 保持 `true`，避免无更新却保存完成产物。 |
+| `builtin_rewards` | 可选内置奖励：`reference_overlap`、`term_constraints`、`refusal`、`length_bounds`；默认 `[]`。 | 只启用数据行中具备匹配信号的奖励。 |
+| `reward_judge` | 默认奖励提供者。配置 `enabled`、`base_url`、`api_key`、`model`、`score_range`、`timeout_seconds`、`max_tokens`、`max_retries`、`system_prompt`、`prompt_template`；`api_key_env` 仅为可选回退。 | 关闭 Judge 时必须至少启用一个内置奖励；自定义提示词仍需保持 v2 严格输出契约。 |
+| `refusal_terms` | 内置 `refusal` 奖励识别拒答时使用的短语列表。 | 仅在启用该内置奖励且领域需要额外拒答表达时修改。 |
+| `beta` | 安装版本支持时使用的 KL/reference 正则强度。 | 策略偏离 reference 过快时谨慎调高。 |
+| `resume_from_checkpoint` | 从同一 GRPO 阶段的 Trainer checkpoint 恢复。 | 仅用于中断续训，不能替代前序 `base_adapter_dir`。 |
+
+`reward_judge` 通过 OpenAI-compatible chat completions API 统一模型评分。主凭据直接从私有 local YAML 的 `api_key` 读取；若为空，才可由 `api_key_env` 指定环境变量回退。本地 Judge 也必须先提供 HTTP 服务，例如 `base_url: "http://localhost:8000/v1"`。Reasoning Judge 推荐 `max_tokens: 4096`、`timeout_seconds: 120`，避免内部推理耗尽预算而没有最终 JSON。注意 `reward_judge.max_tokens` 限制 Judge 的推理和输出，`grpo.max_completion_length` 限制策略候选，两者不能互换。
+
+默认 `grpo_judge_v2` 返回五个维度、违规标识和简短原因；权重合成与硬上限由本地 Python 确定执行。非法 JSON、非有限/越界分数、未知违规和字段不匹配都会失败并在 `max_retries` 内重试。没有可信依据的 prompt-only 行把事实维度设为 `null` 并重分配其余权重。远程 Judge 会收到完整 prompt、候选回答、参考答案、约束和元数据。
+
+默认 `prompt_template` 在 `EVALUATION_INPUT` 后插入 JSON 编码的不可信输入；自定义模板必须保留 `{evaluation_input_json}` 占位符，不能把候选文本直接拼成高权限指令。
+
+外部 Judge 的 `forbidden_terms_mode` 默认是 `semantic`，安全引用、否定或拒绝不算违规；需要任何大小写不敏感字面出现都违规时，按行设为 `literal`。内置 `term_constraints` 保持原有的大小写不敏感字面子串公式，不受该模式影响。字符长度在本地对去除首尾空白后的 Unicode 文本计算，最小/最大边界均为包含关系。
+
+独立运行 `train_grpo.py --base_adapter_dir ...` 与流水线 `--skip_cpt --skip_sft --skip_dpo` 都是从已有前序 adapter 开始新的 GRPO；`resume_from_checkpoint` 只恢复同一 GRPO run。训练后除有限 `grad_norm` 和 adapter tensor 变化外，还要检查 Judge reward 分布与 `completions/clipped_ratio`，避免奖励无方差或大部分候选被截断。
 
 ## `merge`
 
@@ -214,7 +251,7 @@
 
 | 参数 | 说明 | 什么时候改 |
 | --- | --- | --- |
-| `adapter_dir` | 要合并的 adapter 路径。`null` 表示自动选择 DPO、Fact-SFT、CPT 中最新可用 adapter。 | 想手动指定某个 adapter 时填写。 |
+| `adapter_dir` | 要合并的 adapter 路径。`null` 表示按 GRPO、DPO、Fact-SFT、CPT 顺序选择最新可用 adapter。 | 想手动指定某个 adapter 时填写。 |
 | `dtype` | 合并模型保存/加载 dtype，例如 `float16`、`float32`、`auto`。 | GPU 推理通常 `float16`；CPU 或 ONNX 导出可考虑 `float32`。 |
 | `safe_serialization` | 是否用 safetensors 保存。 | 建议保持 `true`。 |
 
@@ -229,6 +266,8 @@
 | `temperature` | 采样温度。越低越稳定，`0` 接近确定性。 | 评估建议低温；创作型场景可调高。 |
 | `top_p` | nucleus sampling 参数。 | 通常和 temperature 配合，评估时保持稳定。 |
 | `repetition_penalty` | 重复惩罚。 | 模型重复输出时调高一点。 |
+
+当前 quality evaluation 是启发式 smoke gate，不是安全认证。生产验收必须让人工或独立 Judge 复核安全样例，并结合训练稳定性、adapter 差异和 GRPO 奖励/截断指标判断。
 
 ## `gguf`
 
@@ -296,12 +335,28 @@ peft:
   lora_alpha: 8
 ```
 
-启用 DPO 时：
+默认 DPO 已启用；只需确认输入数据，若不运行则设置 `enabled: false`：
 
 ```yaml
 dpo:
   enabled: true
   input_path: "data/dpo/preference_examples.jsonl"
+```
+
+默认 GRPO 和外部 Judge 也已启用。请在私有 `configs/domain_post_training.local.yaml` 中补齐 `base_url`、`model`、`api_key`；若不运行则设置 `grpo.enabled: false`。
+
+```yaml
+grpo:
+  enabled: true
+  input_path: "data/grpo/reward_examples.jsonl"
+  builtin_rewards: []
+  reward_judge:
+    enabled: true
+    base_url: "https://your-openai-compatible-endpoint/v1"
+    model: "your-judge-model"
+    api_key: "replace-only-in-local-config"
+    timeout_seconds: 120
+    max_tokens: 4096
 ```
 
 <p align="right"><a href="#english"><strong>Switch to English</strong></a></p>
@@ -310,7 +365,7 @@ dpo:
 
 ## English
 
-This file explains the user-facing parameters in `domain_post_training.yaml`. A practical workflow is to copy the default config, for example to `configs/my_domain.yaml`, edit that copy, and run scripts with `--config configs/my_domain.yaml`.
+This file explains the user-facing parameters in `domain_post_training.yaml`. For real training, copy it to the Git-ignored `configs/domain_post_training.local.yaml` and run scripts with `--config configs/domain_post_training.local.yaml`. A directly configured judge key belongs only in that private plaintext file; the tracked template must keep `api_key: null`.
 
 Path rules:
 
@@ -322,8 +377,8 @@ Path rules:
 
 | Parameter | Meaning | When to change |
 | --- | --- | --- |
-| `base_model_repo_id` | Hugging Face Hub repository ID used by `download_models.py`. | Change it when you switch the base model. |
-| `base_model_name_or_path` | The actual base model path or model ID loaded by training, merge, and inference. | Point it to a local snapshot if you already downloaded the model. |
+| `base_model_repo_id` | Hub download source used by `download_models.py`; the default is `Qwen/Qwen3.5-0.8B`. | Change it when switching the download source. |
+| `base_model_name_or_path` | Model location actually loaded by training, merge, evaluation, and inference. | Keep `models/base-model` after download, or point it at an existing local snapshot. |
 | `trust_remote_code` | Whether Transformers may load custom modeling code from the model repository. | Keep `true` for models that require custom code; set `false` for standard architectures when you want a stricter load path. |
 
 ## `corpus`
@@ -382,7 +437,7 @@ This section controls corpus preflight checks. It is not the runtime model safet
 
 ## `training`
 
-This section controls the CPT stage and shared training defaults. Fact-SFT and DPO can override many of these settings.
+This section controls the CPT stage and shared training defaults. Fact-SFT, DPO, and GRPO can override many of these settings.
 
 | Parameter | Meaning | When to change |
 | --- | --- | --- |
@@ -403,19 +458,21 @@ This section controls the CPT stage and shared training defaults. Fact-SFT and D
 | `lr_scheduler_type` | Learning-rate scheduler, such as `cosine`. | Change only for specific experiments. |
 | `optim` | Optimizer, such as `paged_adamw_8bit`. | Match it to your quantization and hardware setup. |
 | `max_grad_norm` | Gradient clipping threshold. | Lower it if gradients or loss are unstable. |
-| `abort_on_nonfinite_grad_norm` | Abort when non-finite gradient norm is detected. | Enable it when debugging unstable training. |
+| `abort_on_nonfinite_grad_norm` | Abort when non-finite gradient norm is detected. | Keep it `true`; otherwise AMP may skip updates while a completed-looking adapter is still saved. |
 | `logging_nan_inf_filter` | Whether Trainer filters NaN/Inf in logs. | Set `false` when debugging numeric issues. |
 | `logging_steps` | Logging interval in steps. | Lower it for denser training logs. |
 | `eval_steps` | Evaluation interval when validation is enabled. | Tune it to the training duration. |
 | `save_steps` | Checkpoint save interval. | Lower it for long runs; raise it for short runs. |
 | `save_total_limit` | Maximum retained checkpoints. | Lower it when disk space is limited. |
 | `gradient_checkpointing` | Trades compute for lower memory usage. | Keep `true` when memory is limited. |
-| `bf16` | Enable bfloat16 training. | Use it on hardware with good bf16 support. |
-| `fp16` | Enable float16 training. | Common for CUDA training; disable for CPU training. |
+| `bf16` | Enable bfloat16 training; accepts `true`, `false`, or `auto`. | Keep `auto` to prefer BF16 on supported CUDA devices. |
+| `fp16` | Enable float16 training; accepts `true`, `false`, or `auto`. | Keep `auto` to fall back to FP16 on CUDA when BF16 is not used; CPU disables it. |
 | `load_in_4bit` | Load the base model in 4-bit mode. | Useful for QLoRA and low-memory training. |
 | `load_in_8bit` | Load the base model in 8-bit mode. | Alternative to 4-bit; do not enable both. |
-| `torch_dtype` | Model load dtype: `float16`, `bfloat16`, `float32`, or `auto`. | Match your hardware and quantization setup. |
-| `resume_from_checkpoint` | Checkpoint path for resumed training. | Fill it after an interrupted run. |
+| `torch_dtype` | Model load dtype: `float16`, `bfloat16`, `float32`, or `auto`. | Keep `auto` for hardware-aware loading; use an explicit value only in a validated experiment. |
+| `resume_from_checkpoint` | Resume a Trainer checkpoint from the same CPT stage. | Use only after an interruption, not to start from another stage's adapter. |
+
+Exit code `0` or a `completed` report does not prove that updates occurred. Acceptance requires finite `grad_norm` values for every stage and actual LoRA tensor changes between adjacent adapters.
 
 ## `peft`
 
@@ -457,24 +514,24 @@ This section controls Fact-SFT. It uses assistant-only loss, so prompt tokens ar
 | `lr_scheduler_type` | SFT scheduler. | Usually keep `cosine`. |
 | `optim` | SFT optimizer. | Match your hardware and quantization setup. |
 | `max_grad_norm` | SFT gradient clipping threshold. | Lower it if loss is unstable. |
-| `bf16` | Enable bfloat16 for SFT. | Use on hardware with bf16 support. |
-| `fp16` | Enable float16 for SFT. | Common for CUDA; disable for CPU. |
-| `torch_dtype` | SFT model load dtype. | Match hardware and quantization. |
-| `abort_on_nonfinite_grad_norm` | Abort SFT on non-finite gradient norm. | Enable for debugging instability. |
+| `bf16` | Enable bfloat16 for SFT; accepts `auto`. | Keep `auto` to prefer BF16 on supported CUDA devices. |
+| `fp16` | Enable float16 for SFT; accepts `auto`. | Keep `auto` to fall back only when CUDA is not using BF16; CPU disables it. |
+| `torch_dtype` | SFT model load dtype. | Keep `auto` unless an explicit dtype has been validated. |
+| `abort_on_nonfinite_grad_norm` | Abort SFT on non-finite gradient norm. | Keep it `true`. |
 | `logging_steps` | SFT logging interval. | Lower it for more detailed logs. |
 | `eval_steps` | SFT evaluation interval. | Used only with validation. |
 | `save_steps` | SFT checkpoint interval. | Tune by run length and disk space. |
 | `save_total_limit` | Maximum retained SFT checkpoints. | Lower it when disk space is limited. |
-| `resume_from_checkpoint` | Checkpoint path for resumed SFT. | Fill it after an interrupted run. |
+| `resume_from_checkpoint` | Resume a Trainer checkpoint from the same SFT stage. | Use only after an interruption; the CPT adapter still comes from `base_adapter_dir`. |
 | `system_prompt` | System prompt used when constructing Fact-SFT chat prompts. | Must be rewritten for your domain role, knowledge boundary, and safety boundary. |
 
 ## `dpo`
 
-This section controls optional DPO preference training. Each input row needs `prompt`, `chosen`, and `rejected`.
+This section controls DPO preference training, which is enabled by default and can be disabled explicitly. Each input row needs `prompt`, `chosen`, and `rejected`.
 
 | Parameter | Meaning | When to change |
 | --- | --- | --- |
-| `enabled` | Enables the DPO stage. | Set `true` when you have preference data. |
+| `enabled` | Enables the DPO stage; defaults to `true`. | Set `false` when preference data is unavailable or the stage should be skipped. |
 | `input_path` | DPO JSON/JSONL file or directory. | Change it when replacing preference data. |
 | `prepared_dataset_dir` | Output directory for the prepared DPO dataset. | Change it to keep multiple experiments. |
 | `base_adapter_dir` | Starting adapter for DPO, usually Fact-SFT output. | Change it when skipping SFT or using an existing adapter. |
@@ -494,10 +551,10 @@ This section controls optional DPO preference training. Each input row needs `pr
 | `lr_scheduler_type` | DPO scheduler. | Usually keep `cosine`. |
 | `optim` | DPO optimizer. | Match hardware and quantization. |
 | `max_grad_norm` | DPO gradient clipping threshold. | Lower it if training is unstable. |
-| `bf16` | Enable bfloat16 for DPO. | Use on hardware with bf16 support. |
-| `fp16` | Enable float16 for DPO. | Common for CUDA; disable for CPU. |
-| `torch_dtype` | DPO model load dtype. | Match hardware and quantization. |
-| `abort_on_nonfinite_grad_norm` | Abort DPO on non-finite gradient norm. | Enable for debugging instability. |
+| `bf16` | Enable bfloat16 for DPO; accepts `auto`. | Keep `auto` to prefer BF16 on supported CUDA devices. |
+| `fp16` | Enable float16 for DPO; accepts `auto`. | Keep `auto` to fall back only when CUDA is not using BF16; CPU disables it. |
+| `torch_dtype` | DPO model load dtype. | Keep `auto` unless an explicit dtype has been validated. |
+| `abort_on_nonfinite_grad_norm` | Abort DPO on non-finite gradient norm. | Keep it `true`. |
 | `logging_steps` | DPO logging interval. | Lower it for more detailed logs. |
 | `eval_steps` | DPO evaluation interval. | Used only with validation. |
 | `save_steps` | DPO checkpoint interval. | Tune by run length and disk space. |
@@ -506,7 +563,42 @@ This section controls optional DPO preference training. Each input row needs `pr
 | `loss_type` | DPO loss type, such as `sigmoid`. | Usually keep it unless testing another TRL loss. |
 | `truncation_mode` | Truncation behavior for long samples. `keep_start` preserves the beginning. | Change carefully if answer tails matter more than prompt starts. |
 | `precompute_ref_log_probs` | Precomputes reference log probabilities. | Try it for larger datasets when your TRL version and hardware support it. |
-| `resume_from_checkpoint` | Checkpoint path for resumed DPO. | Fill it after an interrupted run. |
+| `resume_from_checkpoint` | Resume a Trainer checkpoint from the same DPO stage. | Use only after an interruption; the previous-stage adapter still comes from `base_adapter_dir`. |
+
+## `grpo`
+
+This section controls GRPO reward optimization after DPO, Fact-SFT, or CPT. GRPO and its external OpenAI-compatible judge are enabled by default, so judge-only rows may contain just `prompt`. Supply trusted private-domain evidence through `trusted_context` / `judge_context` / `context` or `reference_answer`; text inside the user question is never promoted to trusted context.
+
+| Parameter | Meaning | When to change |
+| --- | --- | --- |
+| `enabled` | Enables the GRPO stage; defaults to `true`. | Set `false` when reward prompts are unavailable or the stage should be skipped. |
+| `input_path` | GRPO JSON/JSONL file or directory. | Change it when replacing reward-prompt data. |
+| `prepared_dataset_dir` | Output directory for the prepared GRPO dataset. | Change it to keep multiple experiments. |
+| `base_adapter_dir` | Preferred starting adapter for GRPO. Resolution then falls back through DPO, Fact-SFT, and CPT outputs. | Change it when using an existing adapter outside the configured stage outputs. |
+| `output_dir` | GRPO adapter output directory. | Change it to keep multiple runs. |
+| `require_base_adapter` | Requires an existing DPO, Fact-SFT, or CPT adapter before GRPO. | Set `false` only for intentional base-model GRPO experiments or smoke wiring. |
+| `max_prompt_length` | Maximum prompt length passed to GRPO generation. | Lower it on OOM; raise it for long prompts. |
+| `max_completion_length` | Maximum policy-completion tokens per rollout. | Lower it to reduce rollout cost; on high clipping, improve EOS/stop behavior before raising it. |
+| `num_generations` | Number of completions sampled per prompt. | Increase for stronger relative reward signal; lower it for memory or speed. |
+| `temperature` / `top_p` | Rollout sampling controls. | Tune when completions are too deterministic or too noisy. |
+| `use_vllm` | Uses the vLLM rollout path supported by the installed TRL version. | Keep `false` unless deployment and memory behavior have been validated. |
+| `bf16` / `fp16` / `torch_dtype` | GRPO precision settings; all accept `auto`. | Keep `auto`: BF16-capable CUDA prefers BF16, other CUDA falls back to FP16, and CPU disables mixed precision. |
+| `abort_on_nonfinite_grad_norm` | Abort on a non-finite gradient norm. | Keep it `true` to avoid saving completed-looking artifacts after skipped updates. |
+| `builtin_rewards` | Optional built-in rewards: `reference_overlap`, `term_constraints`, `refusal`, `length_bounds`; defaults to `[]`. | Add only rewards whose matching signals are present in every applicable dataset row. |
+| `reward_judge` | Default reward provider. Configure `enabled`, `base_url`, `api_key`, `model`, `score_range`, `timeout_seconds`, `max_tokens`, `max_retries`, `system_prompt`, and `prompt_template`; `api_key_env` is an optional fallback. | Set `enabled: false` only when at least one built-in reward is enabled. Keep the strict v2 output schema when customizing prompts. |
+| `refusal_terms` | Phrases used by the built-in `refusal` reward to detect a refusal. | Change only when that built-in reward is enabled and the domain needs additional refusal wording. |
+| `beta` | KL/reference regularization strength when supported by the installed TRL version. | Raise carefully when updates drift too far from the reference policy. |
+| `resume_from_checkpoint` | Resume a Trainer checkpoint from the same GRPO stage. | Use only after an interruption; it does not replace `base_adapter_dir`. |
+
+`reward_judge` standardizes model-based scoring through the OpenAI-compatible chat completions API. Put the primary `api_key` only in the private local YAML; if it is null or empty, `api_key_env` may name an environment-variable fallback. Local judges must first be served as an OpenAI-compatible HTTP service, for example with `base_url: "http://localhost:8000/v1"`. Hosted judges use the same fields with their provider URL and model name. For reasoning judges, `max_tokens: 4096` and `timeout_seconds: 120` are the recommended baseline so the final JSON is not lost to a smaller reasoning budget or timeout. `reward_judge.max_tokens` limits judge reasoning plus JSON output; `grpo.max_completion_length` limits policy candidates. Missing judge settings fail before dataset preparation; missing adapters produce commands for continuing GRPO from an existing previous-stage output.
+
+The default `grpo_judge_v2` contract returns five dimension scores plus violation identifiers and a concise reason. Python code, rather than the external model, applies the configured weights and hard caps. Invalid JSON, non-finite or out-of-range dimensions, unknown violations, and extra or missing top-level fields fail closed and are retried up to `max_retries`. Prompt-only rows without supplied grounding evidence use `null` for factual grounding and reweight the other dimensions. Remote judges receive the complete prompt, completion, reference, constraints, and metadata.
+
+The default `prompt_template` places JSON-encoded untrusted data after `EVALUATION_INPUT`. Custom templates must retain the `{evaluation_input_json}` placeholder instead of interpolating candidate text as privileged instructions.
+
+For the external judge, `forbidden_terms_mode` defaults to `semantic`, where safe quotation, negation, or refusal does not count as prohibited use. Set it to `literal` on a row when every case-insensitive occurrence must be rejected. The built-in `term_constraints` reward keeps its original case-insensitive literal-substring formula and is unaffected by this mode. Completion character length is computed locally with stripped Unicode code-point length and inclusive min/max bounds; the judge receives the deterministic result rather than estimating length.
+
+Standalone `train_grpo.py --base_adapter_dir ...` and pipeline execution with `--skip_cpt --skip_sft --skip_dpo` start a new GRPO stage from an existing previous-stage adapter. `resume_from_checkpoint` only resumes the same GRPO run. After training, verify finite `grad_norm`, changed adapter tensors, a meaningful judge-reward distribution, and `completions/clipped_ratio`; low reward variance or widespread clipping is not a production-ready result.
 
 ## `merge`
 
@@ -514,7 +606,7 @@ This section controls merging an adapter into a full Hugging Face model.
 
 | Parameter | Meaning | When to change |
 | --- | --- | --- |
-| `adapter_dir` | Adapter path to merge. `null` auto-selects DPO, Fact-SFT, or CPT output in that order. | Fill it when you want to merge a specific adapter. |
+| `adapter_dir` | Adapter path to merge. `null` auto-selects GRPO, DPO, Fact-SFT, or CPT output in that order. | Fill it when you want to merge a specific adapter. |
 | `dtype` | Merge/load dtype, such as `float16`, `float32`, or `auto`. | Use `float16` for GPU inference; consider `float32` for CPU or ONNX workflows. |
 | `safe_serialization` | Save model weights with safetensors. | Keep `true`. |
 
@@ -529,6 +621,8 @@ This section controls post-training quality evaluation and default generation pa
 | `temperature` | Sampling temperature. Lower values are more stable; `0` is nearly deterministic. | Use low temperature for evaluation; raise it only for more creative output. |
 | `top_p` | Nucleus sampling parameter. | Usually keep it stable for evaluation. |
 | `repetition_penalty` | Penalty for repeated text. | Raise it slightly if the model repeats itself. |
+
+The current quality evaluation is a heuristic smoke gate, not a safety certification. Production acceptance requires human or independent-judge review of safety examples together with training stability, adapter deltas, and GRPO reward/clipping metrics.
 
 ## `gguf`
 
@@ -596,12 +690,28 @@ peft:
   lora_alpha: 8
 ```
 
-To enable DPO:
+DPO is enabled by default. Confirm its input data, or set `enabled: false` to skip it:
 
 ```yaml
 dpo:
   enabled: true
   input_path: "data/dpo/preference_examples.jsonl"
+```
+
+GRPO and its external judge are also enabled by default. Configure `base_url`, `model`, and `api_key` in private `configs/domain_post_training.local.yaml`, or set `grpo.enabled: false` to skip it:
+
+```yaml
+grpo:
+  enabled: true
+  input_path: "data/grpo/reward_examples.jsonl"
+  builtin_rewards: []
+  reward_judge:
+    enabled: true
+    base_url: "https://your-openai-compatible-endpoint/v1"
+    model: "your-judge-model"
+    api_key: "replace-only-in-local-config"
+    timeout_seconds: 120
+    max_tokens: 4096
 ```
 
 <p align="right"><a href="#chinese"><strong>返回中文</strong></a></p>

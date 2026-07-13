@@ -1,7 +1,7 @@
 ﻿"""中文：完整领域后训练流水线入口，串联 CPT、Fact-SFT、可选 DPO、merge 和评估。
 使用时机：按 `configs/domain_post_training.yaml` 从头跑通训练，或用 skip 参数显式跳过部分阶段时使用。
 
-English: Full domain post-training pipeline entrypoint for CPT, Fact-SFT, optional DPO, merge, and evaluation.
+English: Full domain post-training pipeline entrypoint for CPT, Fact-SFT, optional DPO/GRPO, merge, and evaluation.
 Use it to run the configured workflow end to end, or to skip explicit stages with skip flags.
 """
 
@@ -36,6 +36,8 @@ from pipeline.cpt_training import write_training_report
 from pipeline.dpo import prepare_dpo_dataset, train_dpo
 from pipeline.evaluation import evaluate
 from pipeline.fact_sft import prepare_fact_sft_dataset, train_fact_sft
+from pipeline.grpo import prepare_grpo_dataset, train_grpo
+from pipeline.grpo_core import validate_grpo_reward_configuration
 from pipeline.adapter_merge import merge_adapter
 from pipeline.corpus_safety import run_preflight, write_markdown_report
 from pipeline.utils import (
@@ -156,6 +158,7 @@ def _make_smoke_config(config: dict[str, Any], selected_paths: list[Path], logge
             "require_cpt_adapter": True,
         },
         "dpo": {"enabled": False},
+        "grpo": {"enabled": False},
         "merge": {"dtype": "float32"},
         "eval": {"max_new_tokens": 48, "temperature": 0.2, "top_p": 0.9, "repetition_penalty": 1.05},
     }
@@ -204,8 +207,12 @@ def _write_final_report(config: dict[str, Any], *, smoke_test: bool, success: bo
     dpo_cfg = config.get("dpo", {})
     dpo_dir = resolve_training_path(dpo_cfg.get("output_dir"), "outputs/dpo_adapter")
     dpo_metadata = read_json(dpo_dir / "dpo_training_metadata.json", default={})
+    grpo_cfg = config.get("grpo", {})
+    grpo_dir = resolve_training_path(grpo_cfg.get("output_dir"), "outputs/grpo_adapter")
+    grpo_metadata = read_json(grpo_dir / "grpo_training_metadata.json", default={})
     final_adapter = (
-        dpo_metadata.get("adapter_output_dir")
+        grpo_metadata.get("adapter_output_dir")
+        or dpo_metadata.get("adapter_output_dir")
         or sft_metadata.get("adapter_output_dir")
         or training_metadata.get("adapter_output_dir", "not_created")
     )
@@ -245,6 +252,8 @@ def _write_final_report(config: dict[str, Any], *, smoke_test: bool, success: bo
             f"- Fact-SFT examples: `{sft_metadata.get('dataset', {}).get('train_examples', 'not_run')}`",
             f"- DPO enabled: `{bool(dpo_cfg.get('enabled', False))}`",
             f"- DPO pairs: `{dpo_metadata.get('dataset', {}).get('train_pairs', 'not_run')}`",
+            f"- GRPO enabled: `{bool(grpo_cfg.get('enabled', False))}`",
+            f"- GRPO prompts: `{grpo_metadata.get('dataset', {}).get('train_prompts', 'not_run')}`",
             f"- Merged model: `{merge_report.get('merged_output_dir', 'not_created')}`",
             f"- Eval report: `{eval_dir / 'eval_report.md'}`",
             f"- Coverage report: `{dataset_dir / 'coverage_report.md'}`",
@@ -275,6 +284,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip_cpt", action="store_true", help="Skip CPT dataset preparation and CPT adapter training.")
     parser.add_argument("--skip_sft", action="store_true", help="Skip Fact-SFT dataset preparation and training.")
     parser.add_argument("--skip_dpo", action="store_true", help="Skip DPO dataset preparation and training.")
+    parser.add_argument("--skip_grpo", action="store_true", help="Skip GRPO dataset preparation and training.")
     parser.add_argument("--skip_train", action="store_true", help="Deprecated alias for --skip_cpt.")
     parser.add_argument("--skip_fact_sft", action="store_true", help="Deprecated alias for --skip_sft.")
     parser.add_argument("--skip_merge", action="store_true")
@@ -292,6 +302,7 @@ def main() -> int:
     skip_cpt = bool(args.skip_cpt or args.skip_train)
     skip_sft = bool(args.skip_sft or args.skip_fact_sft)
     skip_dpo = bool(args.skip_dpo)
+    skip_grpo = bool(args.skip_grpo)
     try:
         config, config_path = load_config(args.config)
         if args.device:
@@ -309,6 +320,10 @@ def main() -> int:
             skip_cpt = False
             skip_sft = False
             skip_dpo = True
+            skip_grpo = True
+
+        if bool(active_config.get("grpo", {}).get("enabled", False)) and not skip_grpo:
+            validate_grpo_reward_configuration(active_config.get("grpo", {}))
 
         if not skip_cpt:
             if not args.skip_preflight:
@@ -345,6 +360,15 @@ def main() -> int:
             if existing_dpo_dir.exists():
                 final_adapter_dir = existing_dpo_dir
             logger.info("Skipping DPO stage. Existing DPO adapter: %s", existing_dpo_dir if existing_dpo_dir.exists() else "not_found")
+        if bool(active_config.get("grpo", {}).get("enabled", False)) and not skip_grpo:
+            prepare_grpo_dataset(active_config, config_path)
+            grpo_metadata = train_grpo(active_config, config_path)
+            final_adapter_dir = Path(grpo_metadata["adapter_output_dir"])
+        elif bool(active_config.get("grpo", {}).get("enabled", False)) and skip_grpo:
+            existing_grpo_dir = resolve_training_path(active_config.get("grpo", {}).get("output_dir"), "outputs/grpo_adapter")
+            if existing_grpo_dir.exists():
+                final_adapter_dir = existing_grpo_dir
+            logger.info("Skipping GRPO stage. Existing GRPO adapter: %s", existing_grpo_dir if existing_grpo_dir.exists() else "not_found")
         if not args.skip_merge:
             merge_adapter(active_config, adapter_dir=final_adapter_dir)
         if not args.skip_eval:

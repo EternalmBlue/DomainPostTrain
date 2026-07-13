@@ -21,7 +21,7 @@ from transformers import (
 
 from pipeline.modeling import configure_generation_tokens, disable_cache, load_tokenizer, load_transformers_model
 from pipeline.utils import (
-    copy_file,
+    config_without_private_keys,
     format_number,
     load_config,
     parse_nullable_int,
@@ -423,9 +423,9 @@ def train(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
     tokenizer.save_pretrained(str(output_dir))
     trainer.save_state()
 
-    config_snapshot = {k: v for k, v in config.items() if k != "_config_path"}
+    config_snapshot = config_without_private_keys(config)
     save_yaml(output_dir / "config_snapshot.yaml", config_snapshot)
-    copy_file(config_path, output_dir / "original_config.yaml")
+    save_yaml(output_dir / "original_config.yaml", config_snapshot)
     training_args_json = training_args.to_dict()
     write_json(output_dir / "training_args.json", training_args_json)
     log_history = trainer.state.log_history

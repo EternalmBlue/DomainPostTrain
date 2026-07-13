@@ -178,9 +178,22 @@ def normalize_path_for_report(path: Path) -> str:
 
 
 def config_without_private_keys(config: dict[str, Any]) -> dict[str, Any]:
-    result = deepcopy(config)
-    result.pop("_config_path", None)
-    return result
+    private_keys = {"api_key", "access_token", "auth_token", "client_secret", "password", "secret"}
+
+    def scrub(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: scrub(item)
+                for key, item in value.items()
+                if key != "_config_path" and str(key).lower() not in private_keys
+            }
+        if isinstance(value, list):
+            return [scrub(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(scrub(item) for item in value)
+        return deepcopy(value)
+
+    return scrub(config)
 
 
 def parse_nullable_int(value: Any) -> int | None:

@@ -14,6 +14,7 @@ from transformers import AutoTokenizer
 from pipeline.cpt_discovery import discover_corpus
 from pipeline.corpus_safety import has_safety_boundary
 from pipeline.utils import (
+    config_without_private_keys,
     SAFETY_PREAMBLE,
     clean_text_noise,
     load_config,
@@ -1041,7 +1042,7 @@ def prepare_dataset(
         "created_at_utc": utc_now(),
     }
     write_json(output_dir / "dataset_info.json", info)
-    save_yaml(output_dir / "config_snapshot.yaml", {k: v for k, v in config.items() if k != "_config_path"})
+    save_yaml(output_dir / "config_snapshot.yaml", config_without_private_keys(config))
     logger.info(
         "Prepared CPT dataset with full coverage at %s: %d train, %d validation, %.2f%% mandatory coverage",
         output_dir,

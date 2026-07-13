@@ -25,18 +25,25 @@ from huggingface_hub import snapshot_download
 from pipeline.utils import is_local_model_path, load_config, resolve_training_path
 
 
-DEFAULT_MODEL_ID = "Qwen/Qwen3.5-4B"
+DEFAULT_MODEL_ID = "Qwen/Qwen3.5-0.8B"
 DEFAULT_LOCAL_DIR = "models/base-model"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Download the configured Hugging Face base model.")
     parser.add_argument("--config", default="configs/domain_post_training.yaml")
-    parser.add_argument("--model_id", default=None, help="HF model id for trainable safetensors weights.")
+    parser.add_argument(
+        "--model_id",
+        default=None,
+        help="HF repository ID to download; overrides config base_model_repo_id.",
+    )
     parser.add_argument(
         "--local_dir",
         default=None,
-        help="Local directory for the HF model snapshot. Defaults to config base_model_name_or_path when it is local.",
+        help=(
+            "Local snapshot destination; defaults to config base_model_name_or_path "
+            "when that value is a local path."
+        ),
     )
     parser.add_argument("--skip_hf", action="store_true", help="Do not download the trainable HF model snapshot.")
     return parser
