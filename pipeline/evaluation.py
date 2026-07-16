@@ -7,10 +7,15 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-import torch
-from peft import PeftModel
-
-from pipeline.modeling import configure_generation_tokens, load_tokenizer, load_transformers_model
+from pipeline.inference_core import (
+    DEFAULT_SYSTEM_PROMPT,
+    build_prompt,
+    clean_answer,
+    plain_text_answer,
+    resolve_generation_settings,
+    split_reasoning,
+)
+from pipeline.quality_gate import evaluate_quality_gate, validate_quality_gate_configuration
 from pipeline.utils import (
     estimate_repetition_ratio,
     load_config,
@@ -32,17 +37,15 @@ UNSAFE_DISCLOSURE_MARKERS = ["BEGIN PRIVATE KEY", "password=", "access_token", "
 
 
 def _generation_config(config: dict[str, Any]) -> dict[str, Any]:
-    eval_cfg = config.get("eval", {})
-    return {
-        "max_new_tokens": int(eval_cfg.get("max_new_tokens", 512)),
-        "temperature": float(eval_cfg.get("temperature", 0.2)),
-        "top_p": float(eval_cfg.get("top_p", 0.9)),
-        "repetition_penalty": float(eval_cfg.get("repetition_penalty", 1.05)),
-        "do_sample": float(eval_cfg.get("temperature", 0.2)) > 0,
-    }
+    return resolve_generation_settings(config.get("eval", {}))
 
 
 def _load_model_and_tokenizer(model_path: str, config: dict[str, Any], adapter_dir: str | None = None):
+    import torch
+    from peft import PeftModel
+
+    from pipeline.modeling import configure_generation_tokens, load_tokenizer, load_transformers_model
+
     trust_remote_code = bool(config.get("trust_remote_code", True))
     dtype_value = config.get("merge", {}).get("dtype", "auto")
     dtype = torch_dtype_from_config(dtype_value, torch) if str(dtype_value).lower() != "auto" else "auto"
@@ -63,23 +66,45 @@ def _load_model_and_tokenizer(model_path: str, config: dict[str, Any], adapter_d
     return model, tokenizer
 
 
-def _generate(model, tokenizer, prompt: str, gen_cfg: dict[str, Any]) -> str:
+def _generate(
+    model,
+    tokenizer,
+    question: str,
+    gen_cfg: dict[str, Any],
+    *,
+    system_prompt: str,
+) -> dict[str, Any]:
+    import torch
+
+    prompt = build_prompt(tokenizer, question, False, system_prompt)
     inputs = tokenizer(prompt, return_tensors="pt")
     device = next(model.parameters()).device
     inputs = {key: value.to(device) for key, value in inputs.items()}
+    generate_kwargs = {
+        **inputs,
+        "max_new_tokens": gen_cfg["max_new_tokens"],
+        "repetition_penalty": gen_cfg["repetition_penalty"],
+        "no_repeat_ngram_size": gen_cfg["no_repeat_ngram_size"],
+        "do_sample": gen_cfg["do_sample"],
+        "pad_token_id": tokenizer.pad_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+    }
+    if gen_cfg["do_sample"]:
+        generate_kwargs["temperature"] = gen_cfg["temperature"]
+        generate_kwargs["top_p"] = gen_cfg["top_p"]
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=gen_cfg["max_new_tokens"],
-            temperature=gen_cfg["temperature"],
-            top_p=gen_cfg["top_p"],
-            repetition_penalty=gen_cfg["repetition_penalty"],
-            do_sample=gen_cfg["do_sample"],
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
+        outputs = model.generate(**generate_kwargs)
     generated = outputs[0][inputs["input_ids"].shape[-1] :]
-    return tokenizer.decode(generated, skip_special_tokens=True).strip()
+    raw_response = tokenizer.decode(generated, skip_special_tokens=True).strip()
+    answer, reasoning = split_reasoning(raw_response)
+    answer = plain_text_answer(clean_answer(answer))
+    return {
+        "response": answer,
+        "reasoning_present": bool(reasoning),
+        "prompt_tokens": int(inputs["input_ids"].shape[-1]),
+        "completion_tokens": int(generated.shape[-1]),
+        "max_tokens_reached": int(generated.shape[-1]) >= int(gen_cfg["max_new_tokens"]),
+    }
 
 
 def _safety_pass(response: str) -> bool:
@@ -149,8 +174,10 @@ def evaluate_target(
     logger.info("Evaluating %s from %s", target_name, model_path)
     model, tokenizer = _load_model_and_tokenizer(model_path, config, adapter_dir)
     gen_cfg = _generation_config(config)
+    system_prompt = str(config.get("fact_sft", {}).get("system_prompt") or DEFAULT_SYSTEM_PROMPT)
     sample_rows = []
     sections = []
+    generation_errors = 0
 
     for category in EVAL_CATEGORIES:
         questions = questions_by_category.get(category, [])
@@ -159,7 +186,14 @@ def evaluate_target(
         results = []
         for question in questions:
             try:
-                response = _generate(model, tokenizer, question, gen_cfg)
+                generation = _generate(
+                    model,
+                    tokenizer,
+                    question,
+                    gen_cfg,
+                    system_prompt=system_prompt,
+                )
+                response = generation["response"]
                 if category == "safety_boundary":
                     passed = _safety_pass(response)
                 elif category == "base_regression":
@@ -171,8 +205,13 @@ def evaluate_target(
                     "response": response,
                     "passed": passed,
                     "repetition_ratio": estimate_repetition_ratio(response),
+                    "reasoning_present": generation["reasoning_present"],
+                    "prompt_tokens": generation["prompt_tokens"],
+                    "completion_tokens": generation["completion_tokens"],
+                    "max_tokens_reached": generation["max_tokens_reached"],
                 }
             except Exception as exc:
+                generation_errors += 1
                 item = {"question": question, "response": "", "passed": False, "error": short_error(exc)}
             results.append(item)
             sample_rows.append({"target": target_name, "category": category, **item})
@@ -186,7 +225,20 @@ def evaluate_target(
                 "results": results,
             }
         )
-    return {"target": target_name, "model_path": model_path, "sections": sections, "samples": sample_rows}
+    return {
+        "target": target_name,
+        "model_path": model_path,
+        "inference": {
+            "prompt_mode": "chat_template_or_fallback",
+            "enable_thinking": False,
+            "clean_answer": True,
+            "plain_text": True,
+            "generation": dict(gen_cfg),
+        },
+        "generation_error_count": generation_errors,
+        "sections": sections,
+        "samples": sample_rows,
+    }
 
 
 def write_eval_reports(output_dir: Path, report: dict[str, Any]) -> None:
@@ -203,6 +255,7 @@ def write_eval_reports(output_dir: Path, report: dict[str, Any]) -> None:
         f"Status: **{report['status']}**",
         f"Question file: `{report['question_file']}`",
         f"Created at UTC: `{report['created_at_utc']}`",
+        f"Quality gate: `{report.get('quality_gate', {}).get('status', 'not_evaluated')}`",
         "",
     ]
     for target in report["targets"]:
@@ -233,6 +286,8 @@ def evaluate(config: dict[str, Any], config_path: Path, targets: list[str] | Non
     training_cfg = config.get("training", {})
     output_dir = output_dir or resolve_training_path("outputs/eval", "outputs/eval")
     selected_targets = targets or ["merged"]
+    resolve_generation_settings(config.get("eval", {}))
+    validate_quality_gate_configuration(config.get("eval", {}))
     questions_by_category, question_path = _load_quality_questions(config, config_path)
     target_reports = []
     failures = []
@@ -273,12 +328,20 @@ def evaluate(config: dict[str, Any], config_path: Path, targets: list[str] | Non
             safety = next((s for s in target_report["sections"] if s["category"] == "safety_boundary"), None)
             safety_passed = bool(safety and safety["passed"] == safety["total"])
 
-    status = "completed" if not failures else "completed_with_failures"
+    generation_error_count = sum(int(report.get("generation_error_count", 0)) for report in target_reports)
+    status = "completed" if not failures and generation_error_count == 0 else "completed_with_failures"
+    quality_gate = evaluate_quality_gate(
+        config.get("eval", {}),
+        target_reports,
+        expected_targets=selected_targets,
+    )
     report = {
         "status": status,
         "targets": target_reports,
         "failures": failures,
+        "generation_error_count": generation_error_count,
         "safety_eval_passed": safety_passed,
+        "quality_gate": quality_gate,
         "question_file": str(question_path),
         "created_at_utc": utc_now(),
     }
@@ -305,7 +368,9 @@ def main() -> int:
     try:
         report = evaluate(config, config_path, args.targets, output_dir)
         logger.info("Evaluation report written to %s", output_dir or resolve_training_path("outputs/eval", "outputs/eval"))
-        return 0 if report["status"] == "completed" else 6
+        if report["status"] != "completed":
+            return 6
+        return 8 if report.get("quality_gate", {}).get("should_fail_pipeline") else 0
     except Exception as exc:
         logger.error(short_error(exc))
         logger.debug(traceback.format_exc())

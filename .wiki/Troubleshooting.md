@@ -207,6 +207,14 @@ grpo:
 
 这里的 `max_tokens` 是 Judge 响应预算。增加 `grpo.max_completion_length` 只会增加被训练策略的候选长度，不能修复 Judge 空响应。
 
+## Reward Judge 出现 429、503 或批次超时
+
+适用：异步并发外部 Judge。
+
+先检查训练日志中的 `configured_max_concurrency`、`effective_concurrency`、`completion_count` 和 `judge_batch_latency_seconds`。`max_concurrency` 是每个训练进程/rank 的上限，实际值还受当前 completion 数和 `asyncio.to_thread` 线程池容量约束。服务端限流时降低显式并发上限；默认 `auto` 跟随 `num_generations`。
+
+每个 completion 会独立执行指数退避和随机抖动，并在 429/503 返回合法 `Retry-After` 时等待服务端指定时间。任一请求耗尽重试后，整批 reward 会失败，已成功的部分分数不会用于训练。不要通过填充中性奖励绕过失败；应检查 endpoint 限流、超时、服务容量和 `retry_backoff_seconds`。
+
 ## `grad_norm` 是 NaN 或 Inf
 
 适用：CPT、Fact-SFT、DPO、GRPO。
@@ -468,6 +476,14 @@ grpo:
 ```
 
 This `max_tokens` is the judge response budget. Raising `grpo.max_completion_length` only lengthens policy candidates and cannot fix an empty judge response.
+
+## Reward Judge Returns 429/503 or the Batch Times Out
+
+Applies to: asynchronous external-judge scoring.
+
+Inspect `configured_max_concurrency`, `effective_concurrency`, `completion_count`, and `judge_batch_latency_seconds` in the training logs. `max_concurrency` is a per-process/rank upper bound; the current completion count and `asyncio.to_thread` executor capacity can reduce physical concurrency. Lower an explicit cap when the provider rate-limits requests; the default `auto` follows `num_generations`.
+
+Each completion independently uses exponential backoff with jitter and honors valid `Retry-After` values returned with 429/503. If any request exhausts its retries, the complete reward batch fails and successful partial scores are not used for training. Do not mask the failure with neutral rewards; inspect endpoint limits, timeouts, service capacity, and `retry_backoff_seconds`.
 
 ## `grad_norm` Is NaN or Inf
 

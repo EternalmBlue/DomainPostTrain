@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
+import email.utils
 import json
+import logging
 import math
 import os
+import random
 import re
+import time
 import urllib.error
 import urllib.request
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
+
+logger = logging.getLogger(__name__)
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 DEFAULT_REFUSAL_TERMS = (
@@ -49,6 +57,8 @@ grpo:
     base_url: "https://your-judge.example/v1"
     model: "your-judge-model"
     api_key: "your-api-key"
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
 Alternatively set api_key_env to the name of an environment variable containing the key.
 The judge must expose an OpenAI-compatible /v1/chat/completions endpoint."""
 DEFAULT_REWARD_JUDGE_SYSTEM_PROMPT = """You are DomainRewardJudge, an impartial evaluator used only to assign a GRPO reward. Evaluate the candidate assistant response; do not answer the underlying request.
@@ -377,7 +387,10 @@ def _score_range(value: Any) -> tuple[float, float]:
 def _positive_float(value: Any, *, field: str, default: float) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{field} must be a finite number greater than 0")
-    result = float(value if value is not None else default)
+    try:
+        result = float(value if value is not None else default)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{field} must be a finite number greater than 0") from None
     if not math.isfinite(result) or result <= 0:
         raise ValueError(f"{field} must be a finite number greater than 0")
     return result
@@ -400,6 +413,22 @@ def _positive_int(value: Any, *, field: str, default: int) -> int:
     return result
 
 
+def _reward_judge_max_concurrency(value: Any, *, num_generations: Any) -> tuple[str | int, int]:
+    raw = "auto" if value is None else value
+    if isinstance(raw, str):
+        if raw.strip().lower() != "auto":
+            raise ValueError('grpo.reward_judge.max_concurrency must be "auto" or an integer from 1 to 64')
+        resolved = _positive_int(
+            num_generations,
+            field="grpo.num_generations",
+            default=4,
+        )
+        return "auto", resolved
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 64:
+        raise ValueError('grpo.reward_judge.max_concurrency must be "auto" or an integer from 1 to 64')
+    return raw, raw
+
+
 def _reward_judge_config(grpo_cfg: dict[str, Any]) -> dict[str, Any]:
     reward_judge = grpo_cfg.get("reward_judge")
     if reward_judge is None:
@@ -408,6 +437,10 @@ def _reward_judge_config(grpo_cfg: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("grpo.reward_judge must be an object")
     enabled = as_bool(reward_judge.get("enabled", True))
     score_min, score_max = _score_range(reward_judge.get("score_range"))
+    configured_max_concurrency, resolved_max_concurrency = _reward_judge_max_concurrency(
+        reward_judge.get("max_concurrency"),
+        num_generations=grpo_cfg.get("num_generations", 4),
+    )
     config = {
         "enabled": enabled,
         "base_url": str(reward_judge.get("base_url") or "").strip().rstrip("/"),
@@ -423,6 +456,13 @@ def _reward_judge_config(grpo_cfg: dict[str, Any]) -> dict[str, Any]:
             reward_judge.get("max_retries"),
             field="grpo.reward_judge.max_retries",
             default=2,
+        ),
+        "configured_max_concurrency": configured_max_concurrency,
+        "resolved_max_concurrency": resolved_max_concurrency,
+        "retry_backoff_seconds": _positive_float(
+            reward_judge.get("retry_backoff_seconds"),
+            field="grpo.reward_judge.retry_backoff_seconds",
+            default=1.0,
         ),
         "max_tokens": _positive_int(
             reward_judge.get("max_tokens"),
@@ -461,10 +501,13 @@ def _reward_judge_config(grpo_cfg: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def reward_judge_metadata(grpo_cfg: dict[str, Any]) -> dict[str, Any]:
+def reward_judge_metadata(
+    grpo_cfg: dict[str, Any],
+    reward_functions: list[Any] | tuple[Any, ...] | None = None,
+) -> dict[str, Any]:
     config = _reward_judge_config(grpo_cfg)
     score_min, score_max = config["score_range"]
-    return {
+    metadata = {
         "enabled": config["enabled"],
         "base_url": config["base_url"],
         "api_key_env": config["api_key_env"],
@@ -473,9 +516,25 @@ def reward_judge_metadata(grpo_cfg: dict[str, Any]) -> dict[str, Any]:
         "score_range": [score_min, score_max],
         "timeout_seconds": config["timeout_seconds"],
         "max_retries": config["max_retries"],
+        "configured_max_concurrency": config["configured_max_concurrency"],
+        "resolved_max_concurrency": config["resolved_max_concurrency"],
+        "batch_count": 0,
+        "effective_concurrency": None,
+        "max_effective_concurrency": 0,
+        "completion_count": 0,
+        "total_completion_count": 0,
+        "judge_batch_latency_seconds": None,
+        "mean_judge_batch_latency_seconds": None,
+        "retry_backoff_seconds": config["retry_backoff_seconds"],
         "max_tokens": config["max_tokens"],
         "schema_version": REWARD_JUDGE_SCHEMA_VERSION,
     }
+    for reward_function in reward_functions or ():
+        snapshot = getattr(reward_function, "reward_judge_runtime_metadata", None)
+        if callable(snapshot):
+            metadata.update(snapshot())
+            break
+    return metadata
 
 
 def _render_reward_judge_prompt(
@@ -635,7 +694,7 @@ def _extract_chat_completion_content(payload: Any) -> str:
     raise ValueError("Reward judge API response did not include message.content")
 
 
-def _call_openai_compatible_judge(
+def _call_openai_compatible_judge_once(
     config: dict[str, Any],
     prompt: str,
     response_parser: Callable[[str], float],
@@ -658,25 +717,103 @@ def _call_openai_compatible_judge(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {config['api_key']}",
     }
+    request = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=float(config["timeout_seconds"])) as response:
+        body = response.read().decode("utf-8")
+    content = _extract_chat_completion_content(json.loads(body))
+    return response_parser(content)
+
+
+def _retry_after_seconds(error: BaseException, *, now: datetime | None = None) -> float | None:
+    if not isinstance(error, urllib.error.HTTPError) or error.code not in {429, 503}:
+        return None
+    raw_value = error.headers.get("Retry-After") if error.headers is not None else None
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    if re.fullmatch(r"\d+", value):
+        seconds = float(value)
+        return seconds if math.isfinite(seconds) else None
+    try:
+        retry_at = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if retry_at is None:
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    return max(0.0, (retry_at - current).total_seconds())
+
+
+def _reward_judge_retry_delay(config: dict[str, Any], retry_index: int, error: BaseException) -> float:
+    exponential = float(config["retry_backoff_seconds"]) * (2**retry_index)
+    delay = exponential + random.uniform(0.0, exponential)
+    retry_after = _retry_after_seconds(error)
+    if retry_after is not None:
+        delay = max(delay, retry_after)
+    return delay
+
+
+class _RewardJudgeRequestFailure(RuntimeError):
+    pass
+
+
+_REWARD_JUDGE_RETRYABLE_ERRORS = (
+    OSError,
+    urllib.error.URLError,
+    urllib.error.HTTPError,
+    json.JSONDecodeError,
+    ValueError,
+)
+
+
+async def _score_reward_judge_completion(
+    *,
+    index: int,
+    config: dict[str, Any],
+    semaphore: asyncio.Semaphore,
+    prompt: str,
+    response_parser: Callable[[str], float],
+) -> float:
     attempts = int(config["max_retries"]) + 1
-    last_error: Exception | None = None
-    for _ in range(attempts):
-        request = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+    for attempt_index in range(attempts):
+        retry_delay: float | None = None
         try:
-            with urllib.request.urlopen(request, timeout=float(config["timeout_seconds"])) as response:
-                body = response.read().decode("utf-8")
-            content = _extract_chat_completion_content(json.loads(body))
-            return response_parser(content)
-        except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, ValueError) as exc:
-            last_error = exc
-    raise RuntimeError(f"Reward judge request failed after {attempts} attempt(s): {last_error}") from last_error
+            async with semaphore:
+                return await asyncio.to_thread(
+                    _call_openai_compatible_judge_once,
+                    config,
+                    prompt,
+                    response_parser,
+                )
+        except _REWARD_JUDGE_RETRYABLE_ERRORS as exc:
+            if attempt_index + 1 < attempts:
+                retry_delay = _reward_judge_retry_delay(config, attempt_index, exc)
+            if isinstance(exc, urllib.error.HTTPError):
+                exc.close()
+        if retry_delay is not None:
+            await asyncio.sleep(retry_delay)
+    raise _RewardJudgeRequestFailure(
+        f"Reward judge request for completion index {index} failed after {attempts} attempt(s)"
+    ) from None
 
 
-def build_openai_reward_judge(grpo_cfg: dict[str, Any]) -> Callable[..., list[float]]:
+def build_openai_reward_judge(grpo_cfg: dict[str, Any]) -> Callable[..., Awaitable[list[float]]]:
     config = _reward_judge_config(grpo_cfg)
     score_min, score_max = config["score_range"]
+    runtime_state: dict[str, Any] = {
+        "batch_count": 0,
+        "effective_concurrency": None,
+        "max_effective_concurrency": 0,
+        "completion_count": 0,
+        "total_completion_count": 0,
+        "judge_batch_latency_seconds": None,
+        "mean_judge_batch_latency_seconds": None,
+    }
+    total_batch_latency = 0.0
 
-    def openai_compatible_reward_judge(
+    async def openai_compatible_reward_judge(
         completions: list[Any],
         prompt: Any = None,
         prompts: Any = None,
@@ -689,8 +826,13 @@ def build_openai_reward_judge(grpo_cfg: dict[str, Any]) -> Callable[..., list[fl
         min_completion_chars: Any = None,
         max_completion_chars: Any = None,
         category: Any = None,
+        log_metric: Any = None,
         **_: Any,
     ) -> list[float]:
+        nonlocal total_batch_latency
+        completion_count = len(completions)
+        effective_concurrency = min(int(config["resolved_max_concurrency"]), completion_count)
+        batch_started = time.perf_counter()
         prompt_values = _values_for_batch(prompt if prompt is not None else prompts, len(completions))
         reference_values = _values_for_batch(reference_answer, len(completions))
         trusted_context_values = _values_for_batch(trusted_context, len(completions))
@@ -701,7 +843,7 @@ def build_openai_reward_judge(grpo_cfg: dict[str, Any]) -> Callable[..., list[fl
         min_length_values = _values_for_batch(min_completion_chars, len(completions))
         max_length_values = _values_for_batch(max_completion_chars, len(completions))
         category_values = _values_for_batch(category, len(completions))
-        rewards: list[float] = []
+        requests: list[tuple[str, Callable[[str], float]]] = []
         for index, completion in enumerate(completions):
             completion_text = completion_to_text(completion)
             reference_text = completion_to_text(reference_values[index]).strip()
@@ -737,21 +879,84 @@ def build_openai_reward_judge(grpo_cfg: dict[str, Any]) -> Callable[..., list[fl
                 score_min=score_min,
                 score_max=score_max,
             )
-            rewards.append(
-                _call_openai_compatible_judge(
-                    config,
+            grounding_available = bool(reference_text or trusted_context_text)
+            forced_violations = tuple(local_violations)
+            requests.append(
+                (
                     judge_prompt,
-                    lambda content: parse_reward_judge_score(
-                        content,
-                        config["score_range"],
-                        grounding_available=bool(reference_text or trusted_context_text),
-                        forced_violations=local_violations,
+                    lambda content, grounding_available=grounding_available, forced_violations=forced_violations: (
+                        parse_reward_judge_score(
+                            content,
+                            config["score_range"],
+                            grounding_available=grounding_available,
+                            forced_violations=forced_violations,
+                        )
                     ),
                 )
             )
-        return rewards
+
+        if completion_count == 0:
+            results: list[float | BaseException] = []
+        else:
+            semaphore = asyncio.Semaphore(effective_concurrency)
+            tasks = [
+                _score_reward_judge_completion(
+                    index=index,
+                    config=config,
+                    semaphore=semaphore,
+                    prompt=judge_prompt,
+                    response_parser=response_parser,
+                )
+                for index, (judge_prompt, response_parser) in enumerate(requests)
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        batch_latency = time.perf_counter() - batch_started
+        runtime_state["batch_count"] += 1
+        runtime_state["effective_concurrency"] = effective_concurrency
+        runtime_state["max_effective_concurrency"] = max(
+            int(runtime_state["max_effective_concurrency"]),
+            effective_concurrency,
+        )
+        runtime_state["completion_count"] = completion_count
+        runtime_state["total_completion_count"] += completion_count
+        runtime_state["judge_batch_latency_seconds"] = batch_latency
+        total_batch_latency += batch_latency
+        runtime_state["mean_judge_batch_latency_seconds"] = total_batch_latency / int(runtime_state["batch_count"])
+
+        metric_values = {
+            "reward_judge/configured_max_concurrency": float(config["resolved_max_concurrency"]),
+            "reward_judge/effective_concurrency": float(effective_concurrency),
+            "reward_judge/completion_count": float(completion_count),
+            "reward_judge/judge_batch_latency_seconds": batch_latency,
+            "reward_judge/retry_backoff_seconds": float(config["retry_backoff_seconds"]),
+        }
+        if callable(log_metric):
+            for name, value in metric_values.items():
+                log_metric(name, value)
+
+        failed_indices = [index for index, result in enumerate(results) if isinstance(result, BaseException)]
+        logger.info(
+            "GRPO reward Judge batch: configured_max_concurrency=%s resolved_max_concurrency=%s "
+            "effective_concurrency=%s completion_count=%s judge_batch_latency_seconds=%.3f "
+            "retry_backoff_seconds=%s failed_count=%s",
+            config["configured_max_concurrency"],
+            config["resolved_max_concurrency"],
+            effective_concurrency,
+            completion_count,
+            batch_latency,
+            config["retry_backoff_seconds"],
+            len(failed_indices),
+        )
+        if failed_indices:
+            raise RuntimeError(
+                f"Reward judge batch failed for {len(failed_indices)}/{completion_count} completion(s); "
+                f"failed indices: {failed_indices}. Successful partial scores were discarded."
+            ) from None
+        return [float(result) for result in results]
 
     openai_compatible_reward_judge.__name__ = "openai_compatible_reward_judge"
+    openai_compatible_reward_judge.reward_judge_runtime_metadata = lambda: dict(runtime_state)  # type: ignore[attr-defined]
     return openai_compatible_reward_judge
 
 

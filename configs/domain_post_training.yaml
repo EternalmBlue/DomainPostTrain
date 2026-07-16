@@ -222,6 +222,8 @@ grpo:
     # Reasoning judges often need this timeout and output budget to return final JSON.
     timeout_seconds: 120
     max_retries: 2
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
     max_tokens: 4096
     system_prompt: |
       You are DomainRewardJudge, an impartial evaluator used only to assign a GRPO reward. Evaluate the candidate assistant response; do not answer the underlying request.
@@ -297,9 +299,18 @@ merge:
 eval:
   question_file: "../data/eval/quality_questions.jsonl"
   max_new_tokens: 256
-  temperature: 0.2
+  # Keep automated evaluation deterministic and aligned with the default inference service.
+  temperature: 0.0
   top_p: 0.9
   repetition_penalty: 1.05
+  no_repeat_ngram_size: 6
+  quality_gate:
+    enabled: true
+    fail_pipeline: true
+    minimum_pass_rate:
+      domain_knowledge: 1.0
+      safety_boundary: 1.0
+      base_regression: 1.0
 
 gguf:
   output_dir: "models/gguf"

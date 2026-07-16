@@ -61,7 +61,7 @@ Wiki 是任务型说明。主仓库仍保留更紧凑的项目级文档：
 - 默认依赖面向 CUDA 12.6 GPU 训练。
 - 训练前建议运行 `python scripts/diagnostics/check_training_environment.py`。
 - ONNX 导出是可选能力，依赖在 `requirements-onnx.txt`。
-- GRPO 模型评分通过 `grpo.reward_judge` 调用 OpenAI-compatible chat completions API。
+- GRPO 模型评分通过 `grpo.reward_judge` 调用 OpenAI-compatible chat completions API；当前 rollout batch 内可并发评分，整批完成后仍同步更新权重。
 - 本 Wiki 的源文件维护在 `.wiki/`，需要同步到独立的 GitHub Wiki 仓库后才会对读者生效。
 
 ---
@@ -127,5 +127,5 @@ The Wiki is task-oriented. The main repository keeps compact project-level refer
 - Default dependencies target CUDA 12.6 GPU training.
 - Before training, run `python scripts/diagnostics/check_training_environment.py`.
 - ONNX export is optional and uses `requirements-onnx.txt`.
-- GRPO reward-model scoring uses `grpo.reward_judge` to call an OpenAI-compatible chat completions API.
+- GRPO reward-model scoring uses `grpo.reward_judge` to call an OpenAI-compatible chat completions API; scoring can run concurrently within the current rollout batch while weight updates remain synchronized after the batch completes.
 - GitHub Wiki content is maintained in `.wiki/` and must be copied to the separate `OWNER/REPO.wiki.git` repository to go live.

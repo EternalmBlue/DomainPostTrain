@@ -16,6 +16,7 @@ from datasets import Dataset, DatasetDict, load_from_disk
 from peft import PeftModel
 from transformers import AutoTokenizer, Trainer, TrainingArguments
 
+from pipeline.adapter_provenance import write_adapter_provenance
 from pipeline.cpt_training import (
     NonFiniteTrainingCallback,
     _build_peft_model,
@@ -474,6 +475,12 @@ def train_fact_sft(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
         "created_at_utc": utc_now(),
     }
     write_json(output_dir / "fact_sft_training_metadata.json", metadata)
+    write_adapter_provenance(
+        output_dir,
+        stage="fact_sft",
+        created_at_utc=metadata["created_at_utc"],
+        base_adapter_dir=base_adapter_dir if base_adapter_dir.exists() else None,
+    )
     write_fact_sft_report(resolve_training_path("outputs/reports/fact_sft_report.md", "outputs/reports/fact_sft_report.md"), metadata)
     return metadata
 

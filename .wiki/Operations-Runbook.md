@@ -74,7 +74,7 @@ python scripts/model_artifacts/download_models.py --model_id Qwen/Qwen3.5-0.8B -
 
 ## 真实训练配置预检
 
-使用 Git 忽略的 `configs/domain_post_training.local.yaml` 运行真实训练。默认 DPO、GRPO 和外部 Judge 开启，确认已准备两个数据集并配置 Judge 的 `base_url`、`model` 和明文 `api_key`。环境变量只在 `api_key` 为空时作为可选回退。
+使用 Git 忽略的 `configs/domain_post_training.local.yaml` 运行真实训练。默认 DPO、GRPO 和外部 Judge 开启，确认已准备两个数据集并配置 Judge 的 `base_url`、`model` 和明文 `api_key`。环境变量只在 `api_key` 为空时作为可选回退。默认 `max_concurrency: "auto"` 跟随 `num_generations`，`retry_backoff_seconds: 1.0` 是独立请求指数退避的基数。
 
 四个训练阶段保持：
 
@@ -105,9 +105,9 @@ outputs/logs/discovered_corpus.json
 | `2` | `check_training_environment.py` | PyTorch 无法导入。 |
 | `4` | CPT training | CPT 训练失败。 |
 | `5` | adapter merge | 合并 adapter 失败。 |
-| `6` | quality evaluation | 质量评估失败或状态不是 completed。 |
+| `6` | quality evaluation | 评估执行失败或状态不是 completed。 |
 | `7` | `train_pipeline.py` | 完整流水线失败，并写入 failure report。 |
-| `8` | Fact-SFT 或 ONNX export | Fact-SFT 失败；ONNX export 也使用 `8` 表示导出失败。 |
+| `8` | 完整流水线、Fact-SFT 或 ONNX export | 完整流水线产物完成但质量门禁失败；独立 Fact-SFT/ONNX 脚本仍用 `8` 表示自身失败。 |
 | `9` | DPO | DPO 数据准备或训练失败。 |
 | `10` | GRPO | GRPO 数据准备或训练失败。 |
 
@@ -189,7 +189,7 @@ python scripts/model_artifacts/merge_adapter.py --config configs/domain_post_tra
 | `outputs/fact_sft_dataset/fact_sft_dataset_report.md` | SFT 样本数量、跳过样本、assistant-only loss 情况。 |
 | `outputs/dpo_dataset/dpo_dataset_report.md` | DPO 偏好对数量、跳过原因和分类分布。 |
 | `outputs/grpo_dataset/grpo_dataset_report.md` | GRPO prompt 数量、跳过原因、Judge 状态、内置奖励列表和分类分布。 |
-| `outputs/reports/grpo_report.md` | GRPO 起点 adapter、精度、loss、Judge 配置元数据和训练摘要。 |
+| `outputs/reports/grpo_report.md` | GRPO 起点 adapter、精度、loss、Judge 配置，以及实际并发、completion 数和 Judge 批延迟摘要。 |
 | `outputs/merged_model/merge_report.json` | 合并使用的 adapter、基础模型、dtype 和加载验证。 |
 | `outputs/eval/eval_report.md` | 训练后质量评估输出，重点看 `safety_boundary` 和 `base_regression`。 |
 | `outputs/reports/pipeline_report.md` | 完整流水线摘要。 |
@@ -200,8 +200,10 @@ python scripts/model_artifacts/merge_adapter.py --config configs/domain_post_tra
 2. 对比相邻 adapter 的 LoRA tensor，确认训练参数实际变化。
 3. 检查 Judge reward 均值和方差。reward 过低需要检查数据与 rubric；近似常数无法提供有效排序信号。
 4. 检查 `completions/clipped_ratio`。高截断先改善 EOS/停止行为，再考虑提高 `grpo.max_completion_length`。
-5. 推理型 Judge 若返回空 `content`，使用 `reward_judge.max_tokens: 4096` 和 `timeout_seconds: 120`；不要用策略的 completion 长度修复 Judge 输出。
-6. `eval_report.md` 只是启发式 smoke gate。生产发布前对安全样例执行人工或独立 Judge 复核。
+5. 对照 `configured_max_concurrency`、`effective_concurrency`、`completion_count` 和 `judge_batch_latency_seconds`；确认实际并发不超过 `min(上限, completion 数)`。Semaphore 上限按进程/rank 生效，线程池容量可能让实际连接数更低。
+6. 出现 429/503 时检查 `Retry-After`、服务限流和 `retry_backoff_seconds`。任一请求最终失败应使整批 reward 失败，不能使用部分或中性分数继续训练。
+7. 推理型 Judge 若返回空 `content`，使用 `reward_judge.max_tokens: 4096` 和 `timeout_seconds: 120`；不要用策略的 completion 长度修复 Judge 输出。
+8. `eval_report.md` 只是启发式 smoke gate。生产发布前对安全样例执行人工或独立 Judge 复核。
 
 ## 存储和清理
 
@@ -294,7 +296,7 @@ python scripts/model_artifacts/download_models.py --model_id Qwen/Qwen3.5-0.8B -
 
 ## Live Training Config Preflight
 
-Run real training with the Git-ignored `configs/domain_post_training.local.yaml`. DPO, GRPO, and the external judge are enabled by default; confirm that both datasets exist and configure judge `base_url`, `model`, and plaintext `api_key`. Environment variables are only an optional fallback when `api_key` is empty.
+Run real training with the Git-ignored `configs/domain_post_training.local.yaml`. DPO, GRPO, and the external judge are enabled by default; confirm that both datasets exist and configure judge `base_url`, `model`, and plaintext `api_key`. Environment variables are only an optional fallback when `api_key` is empty. The default `max_concurrency: "auto"` follows `num_generations`, and `retry_backoff_seconds: 1.0` is the base delay for independent exponential retries.
 
 Keep these settings across all four stages:
 
@@ -325,9 +327,9 @@ Common stage exit codes:
 | `2` | `check_training_environment.py` | PyTorch import failed. |
 | `4` | CPT training | CPT training failed. |
 | `5` | adapter merge | Adapter merge failed. |
-| `6` | quality evaluation | Quality evaluation failed or did not complete. |
+| `6` | quality evaluation | Evaluation execution failed or did not complete. |
 | `7` | `train_pipeline.py` | Full pipeline failed and wrote a failure report. |
-| `8` | Fact-SFT or ONNX export | Fact-SFT failed; ONNX export also uses `8` for export failure. |
+| `8` | Full pipeline, Fact-SFT, or ONNX export | Full-pipeline artifacts completed but the quality gate failed; standalone Fact-SFT/ONNX scripts still use `8` for their own failure. |
 | `9` | DPO | DPO preparation or training failed. |
 | `10` | GRPO | GRPO preparation or training failed. |
 
@@ -409,7 +411,7 @@ python scripts/model_artifacts/merge_adapter.py --config configs/domain_post_tra
 | `outputs/fact_sft_dataset/fact_sft_dataset_report.md` | SFT example counts, skipped examples, and assistant-only loss. |
 | `outputs/dpo_dataset/dpo_dataset_report.md` | DPO pair counts, skip reasons, and category distribution. |
 | `outputs/grpo_dataset/grpo_dataset_report.md` | GRPO prompt counts, skip reasons, judge state, built-in rewards, and category distribution. |
-| `outputs/reports/grpo_report.md` | GRPO starting adapter, precision, loss, judge metadata, and training summary. |
+| `outputs/reports/grpo_report.md` | GRPO starting adapter, precision, loss, judge configuration, and summaries of effective concurrency, completion count, and judge batch latency. |
 | `outputs/merged_model/merge_report.json` | Adapter source, base model, dtype, and load test. |
 | `outputs/eval/eval_report.md` | Post-training quality evaluation, especially `safety_boundary` and `base_regression`. |
 | `outputs/reports/pipeline_report.md` | Full-pipeline summary. |
@@ -420,8 +422,10 @@ python scripts/model_artifacts/merge_adapter.py --config configs/domain_post_tra
 2. Compare LoRA tensors across adjacent adapters to verify real parameter changes.
 3. Inspect judge reward mean and variance. Low rewards require rubric/data review; near-constant rewards cannot rank candidates effectively.
 4. Inspect `completions/clipped_ratio`. Improve EOS/stop behavior before raising `grpo.max_completion_length`.
-5. For empty judge `content`, use `reward_judge.max_tokens: 4096` and `timeout_seconds: 120`; do not tune judge output with policy completion length.
-6. Treat `eval_report.md` as a heuristic smoke gate. Human-review or independently judge safety cases before production release.
+5. Compare `configured_max_concurrency`, `effective_concurrency`, `completion_count`, and `judge_batch_latency_seconds`; effective concurrency must not exceed `min(cap, completion count)`. The semaphore cap applies per process/rank, and executor capacity may reduce physical connections.
+6. On 429/503, inspect `Retry-After`, provider limits, and `retry_backoff_seconds`. Any final request failure should fail the complete reward batch rather than continue with partial or neutral scores.
+7. For empty judge `content`, use `reward_judge.max_tokens: 4096` and `timeout_seconds: 120`; do not tune judge output with policy completion length.
+8. Treat `eval_report.md` as a heuristic smoke gate. Human-review or independently judge safety cases before production release.
 
 ## Storage and Cleanup
 

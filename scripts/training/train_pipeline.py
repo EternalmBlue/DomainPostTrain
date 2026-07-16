@@ -40,6 +40,8 @@ from pipeline.grpo import prepare_grpo_dataset, train_grpo
 from pipeline.grpo_core import validate_grpo_reward_configuration
 from pipeline.adapter_merge import merge_adapter
 from pipeline.corpus_safety import run_preflight, write_markdown_report
+from pipeline.inference_core import resolve_generation_settings
+from pipeline.quality_gate import validate_quality_gate_configuration
 from pipeline.utils import (
     config_without_private_keys,
     deep_update,
@@ -160,7 +162,13 @@ def _make_smoke_config(config: dict[str, Any], selected_paths: list[Path], logge
         "dpo": {"enabled": False},
         "grpo": {"enabled": False},
         "merge": {"dtype": "float32"},
-        "eval": {"max_new_tokens": 48, "temperature": 0.2, "top_p": 0.9, "repetition_penalty": 1.05},
+        "eval": {
+            "max_new_tokens": 48,
+            "temperature": 0.0,
+            "top_p": 0.9,
+            "repetition_penalty": 1.05,
+            "quality_gate": {"fail_pipeline": False},
+        },
     }
     smoke_config = deep_update(config_without_private_keys(config), smoke_overrides)
     save_yaml(resolve_training_path("outputs/logs/smoke_domain_post_training.yaml", "outputs/logs/smoke_domain_post_training.yaml"), smoke_config)
@@ -186,7 +194,15 @@ def _verify_coverage(config: dict[str, Any]) -> dict[str, Any]:
     return coverage
 
 
-def _write_final_report(config: dict[str, Any], *, smoke_test: bool, success: bool, failure: str | None = None) -> None:
+def _write_final_report(
+    config: dict[str, Any],
+    *,
+    smoke_test: bool,
+    success: bool,
+    failure: str | None = None,
+    evaluation_performed: bool = True,
+    eval_report: dict[str, Any] | None = None,
+) -> None:
     reports_dir = resolve_training_path("outputs/reports", "outputs/reports")
     logs_dir = resolve_training_path("outputs/logs", "outputs/logs")
     dataset_dir = _dataset_dir(config)
@@ -199,7 +215,10 @@ def _write_final_report(config: dict[str, Any], *, smoke_test: bool, success: bo
     coverage = read_json(dataset_dir / "coverage_report.json", default={})
     preflight = read_json(logs_dir / "preflight_report.json", default={})
     merge_report = read_json(merged_dir / "merge_report.json", default={})
-    eval_report = read_json(eval_dir / "eval_report.json", default={})
+    if not evaluation_performed:
+        eval_report = {}
+    elif eval_report is None:
+        eval_report = read_json(eval_dir / "eval_report.json", default={})
     training_metadata = read_json(adapter_dir / "training_metadata.json", default={})
     sft_cfg = config.get("fact_sft", {})
     sft_dir = resolve_training_path(sft_cfg.get("output_dir"), "outputs/fact_sft_adapter")
@@ -216,11 +235,31 @@ def _write_final_report(config: dict[str, Any], *, smoke_test: bool, success: bo
         or sft_metadata.get("adapter_output_dir")
         or training_metadata.get("adapter_output_dir", "not_created")
     )
+    quality_gate = eval_report.get("quality_gate", {})
+    quality_gate_status = quality_gate.get("status", "not_evaluated")
+    eval_report_path = str(eval_dir / "eval_report.md") if evaluation_performed else "not_run"
+    safety_eval_status: bool | str = eval_report.get("safety_eval_passed", False) if evaluation_performed else "not_run"
+    release_ready = bool(
+        success
+        and not smoke_test
+        and evaluation_performed
+        and eval_report.get("status") == "completed"
+        and quality_gate_status in {"passed", "not_enforced"}
+    )
+    if not success:
+        report_status = "failed"
+    elif quality_gate_status == "failed":
+        report_status = "quality_gate_failed" if quality_gate.get("should_fail_pipeline") else "completed_with_quality_warnings"
+    else:
+        report_status = "completed"
 
     lines = [
         "# DomainPostTrain PEFT Pipeline Report",
         "",
-        f"Status: **{'completed' if success else 'failed'}**",
+        f"Status: **{report_status}**",
+        f"Pipeline execution status: `{'completed' if success else 'failed'}`",
+        f"Quality gate status: `{quality_gate_status}`",
+        f"Release ready: `{release_ready}`",
         f"Smoke test mode: `{smoke_test}`",
         f"Created at UTC: `{utc_now()}`",
         "",
@@ -255,13 +294,15 @@ def _write_final_report(config: dict[str, Any], *, smoke_test: bool, success: bo
             f"- GRPO enabled: `{bool(grpo_cfg.get('enabled', False))}`",
             f"- GRPO prompts: `{grpo_metadata.get('dataset', {}).get('train_prompts', 'not_run')}`",
             f"- Merged model: `{merge_report.get('merged_output_dir', 'not_created')}`",
-            f"- Eval report: `{eval_dir / 'eval_report.md'}`",
+            f"- Eval report: `{eval_report_path}`",
             f"- Coverage report: `{dataset_dir / 'coverage_report.md'}`",
             "",
             "## Checks",
             "",
             f"- Merged model load test passed: `{merge_report.get('merged_model_load_test_passed', False)}`",
-            f"- Safety eval passed: `{eval_report.get('safety_eval_passed', False)}`",
+            f"- Safety eval passed: `{safety_eval_status}`",
+            f"- Quality gate status: `{quality_gate_status}`",
+            f"- Release ready: `{release_ready}`",
             f"- Smoke artifacts are final model: `{False if smoke_test else 'N/A'}`",
             "",
         ]
@@ -322,6 +363,9 @@ def main() -> int:
             skip_dpo = True
             skip_grpo = True
 
+        resolve_generation_settings(active_config.get("eval", {}))
+        validate_quality_gate_configuration(active_config.get("eval", {}))
+
         if bool(active_config.get("grpo", {}).get("enabled", False)) and not skip_grpo:
             validate_grpo_reward_configuration(active_config.get("grpo", {}))
 
@@ -371,11 +415,27 @@ def main() -> int:
             logger.info("Skipping GRPO stage. Existing GRPO adapter: %s", existing_grpo_dir if existing_grpo_dir.exists() else "not_found")
         if not args.skip_merge:
             merge_adapter(active_config, adapter_dir=final_adapter_dir)
+        eval_report = None
+        evaluation_performed = False
         if not args.skip_eval:
             eval_output = resolve_training_path("outputs/smoke/eval" if args.smoke_test else "outputs/eval", "outputs/eval")
-            evaluate(active_config, config_path, ["merged"], eval_output)
+            eval_report = evaluate(active_config, config_path, ["merged"], eval_output)
+            evaluation_performed = True
+            if eval_report.get("status") != "completed":
+                raise RuntimeError("Post-training quality evaluation did not complete successfully.")
 
-        _write_final_report(active_config, smoke_test=args.smoke_test, success=True)
+        _write_final_report(
+            active_config,
+            smoke_test=args.smoke_test,
+            success=True,
+            evaluation_performed=evaluation_performed,
+            eval_report=eval_report,
+        )
+        if eval_report and eval_report.get("quality_gate", {}).get("should_fail_pipeline"):
+            logger.error("Training completed, but the configured quality gate failed. Artifacts and reports were retained.")
+            return 8
+        if args.skip_eval:
+            logger.warning("Quality evaluation was skipped; artifacts are not marked release-ready.")
         logger.info("Training flow completed. Report: %s", resolve_training_path("outputs/reports/pipeline_report.md", "outputs/reports/pipeline_report.md"))
         return 0
     except Exception as exc:
@@ -388,9 +448,20 @@ def main() -> int:
             )
         logger.error(failure)
         logger.debug(traceback.format_exc())
-        fail_with_report(resolve_training_path("outputs/reports/failure_report.md", "outputs/reports/failure_report.md"), "configured base model PEFT CPT Training Failure", failure)
+        fail_with_report(
+            resolve_training_path("outputs/reports/failure_report.md", "outputs/reports/failure_report.md"),
+            "DomainPostTrain Pipeline Failure",
+            failure,
+        )
         try:
-            _write_final_report(locals().get("active_config", locals().get("config", {})), smoke_test=args.smoke_test, success=False, failure=failure)
+            _write_final_report(
+                locals().get("active_config", locals().get("config", {})),
+                smoke_test=args.smoke_test,
+                success=False,
+                failure=failure,
+                evaluation_performed=locals().get("evaluation_performed", False),
+                eval_report=locals().get("eval_report"),
+            )
         except Exception:
             logger.debug("Failed to write final report after failure.", exc_info=True)
         return 7

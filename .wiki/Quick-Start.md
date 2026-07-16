@@ -49,7 +49,7 @@ Copy-Item configs/domain_post_training.yaml configs/domain_post_training.local.y
 
 编辑 `configs/domain_post_training.local.yaml`。该命名模式应被 Git 忽略，可用于保存明文 `grpo.reward_judge.api_key`。保留受跟踪的 `configs/domain_post_training.yaml` 作为无密钥模板。
 
-默认 DPO 和 GRPO 开启。真实训练前需要准备对应数据，并在 local YAML 中填写 Judge 的 `base_url`、`model`、`api_key`。推理型 Judge 建议使用 `max_tokens: 4096` 和 `timeout_seconds: 120`。
+默认 DPO 和 GRPO 开启。真实训练前需要准备对应数据，并在 local YAML 中填写 Judge 的 `base_url`、`model`、`api_key`。推理型 Judge 建议使用 `max_tokens: 4096` 和 `timeout_seconds: 120`。默认 `max_concurrency: "auto"` 跟随 `num_generations`；评分在当前 rollout batch 内并发，整批完成后才同步更新权重。
 
 ## 3. 运行 CPU smoke test
 
@@ -139,7 +139,7 @@ Copy-Item configs/domain_post_training.yaml configs/domain_post_training.local.y
 
 Edit `configs/domain_post_training.local.yaml`. This name pattern should be ignored by Git and can hold the plaintext `grpo.reward_judge.api_key`. Keep tracked `configs/domain_post_training.yaml` as the key-free template.
 
-DPO and GRPO are enabled by default. Before real training, prepare both datasets and set the judge `base_url`, `model`, and `api_key` in the local YAML. For reasoning judges, start with `max_tokens: 4096` and `timeout_seconds: 120`.
+DPO and GRPO are enabled by default. Before real training, prepare both datasets and set the judge `base_url`, `model`, and `api_key` in the local YAML. For reasoning judges, start with `max_tokens: 4096` and `timeout_seconds: 120`. The default `max_concurrency: "auto"` follows `num_generations`; scoring is concurrent within the current rollout batch, and weight updates remain synchronized after the full batch completes.
 
 ## 3. Run the CPU Smoke Test
 

@@ -230,12 +230,16 @@
 | `bf16` / `fp16` / `torch_dtype` | GRPO 精度配置，均支持 `auto`。 | 保持 `auto`；BF16-capable CUDA 优先 BF16，其他 CUDA 回退 FP16，CPU 关闭混合精度。 |
 | `abort_on_nonfinite_grad_norm` | 非有限梯度时是否中止。 | 保持 `true`，避免无更新却保存完成产物。 |
 | `builtin_rewards` | 可选内置奖励：`reference_overlap`、`term_constraints`、`refusal`、`length_bounds`；默认 `[]`。 | 只启用数据行中具备匹配信号的奖励。 |
-| `reward_judge` | 默认奖励提供者。配置 `enabled`、`base_url`、`api_key`、`model`、`score_range`、`timeout_seconds`、`max_tokens`、`max_retries`、`system_prompt`、`prompt_template`；`api_key_env` 仅为可选回退。 | 关闭 Judge 时必须至少启用一个内置奖励；自定义提示词仍需保持 v2 严格输出契约。 |
+| `reward_judge` | 默认奖励提供者。配置 `enabled`、`base_url`、`api_key`、`model`、`score_range`、`timeout_seconds`、`max_tokens`、`max_retries`、`max_concurrency`、`retry_backoff_seconds`、`system_prompt`、`prompt_template`；`api_key_env` 仅为可选回退。 | 关闭 Judge 时必须至少启用一个内置奖励；自定义提示词仍需保持 v2 严格输出契约。 |
 | `refusal_terms` | 内置 `refusal` 奖励识别拒答时使用的短语列表。 | 仅在启用该内置奖励且领域需要额外拒答表达时修改。 |
 | `beta` | 安装版本支持时使用的 KL/reference 正则强度。 | 策略偏离 reference 过快时谨慎调高。 |
 | `resume_from_checkpoint` | 从同一 GRPO 阶段的 Trainer checkpoint 恢复。 | 仅用于中断续训，不能替代前序 `base_adapter_dir`。 |
 
 `reward_judge` 通过 OpenAI-compatible chat completions API 统一模型评分。主凭据直接从私有 local YAML 的 `api_key` 读取；若为空，才可由 `api_key_env` 指定环境变量回退。本地 Judge 也必须先提供 HTTP 服务，例如 `base_url: "http://localhost:8000/v1"`。Reasoning Judge 推荐 `max_tokens: 4096`、`timeout_seconds: 120`，避免内部推理耗尽预算而没有最终 JSON。注意 `reward_judge.max_tokens` 限制 Judge 的推理和输出，`grpo.max_completion_length` 限制策略候选，两者不能互换。
+
+`max_concurrency` 支持 `"auto"` 或 `1..64` 的整数。`"auto"` 解析为 `grpo.num_generations`，每个 reward batch 的 `effective_concurrency` 为 `min(解析后的上限, completion_count)`。显式整数可以在同一 reward batch 内跨多个 prompt 并发评分。该 Semaphore 上限按训练进程/rank 生效；单 GPU 时就是整次运行的上限，但 `asyncio.to_thread` 的线程池容量可能让实际 socket 并发更低，因此它是上限而不是保证值。
+
+Judge 并发只覆盖当前 rollout batch 的评分请求。完整流程是 `候选生成 -> 并发评分 -> 等待整批 -> group advantage -> 同步权重更新`；不会离线预生成整个数据集，也不会并发执行 optimizer 更新。每个 completion 按 `retry_backoff_seconds` 独立执行指数退避与随机抖动，HTTP 429/503 的合法 `Retry-After` 会被遵守。任一请求耗尽 `max_retries` 后整批失败，部分成功分数不会被应用。
 
 默认 `grpo_judge_v2` 返回五个维度、违规标识和简短原因；权重合成与硬上限由本地 Python 确定执行。非法 JSON、非有限/越界分数、未知违规和字段不匹配都会失败并在 `max_retries` 内重试。没有可信依据的 prompt-only 行把事实维度设为 `null` 并重分配其余权重。远程 Judge 会收到完整 prompt、候选回答、参考答案、约束和元数据。
 
@@ -266,8 +270,14 @@
 | `temperature` | 采样温度。越低越稳定，`0` 接近确定性。 | 评估建议低温；创作型场景可调高。 |
 | `top_p` | nucleus sampling 参数。 | 通常和 temperature 配合，评估时保持稳定。 |
 | `repetition_penalty` | 重复惩罚。 | 模型重复输出时调高一点。 |
+| `no_repeat_ngram_size` | 评估和默认推理使用的重复 n-gram 禁止长度。 | 默认 `6`；出现重复退化时保留或谨慎调高。 |
+| `quality_gate` | 评估验收门禁，包含 `enabled`、`fail_pipeline` 和各类别 `minimum_pass_rate`。 | 默认启用并要求三个类别全部通过；失败保留产物并让完整流水线返回 `8`。 |
+
+默认 `minimum_pass_rate` 对 `domain_knowledge`、`safety_boundary`、`base_regression` 均设为 `1.0`。可以按自己的评估设计调整，但缺失类别会 fail closed。
 
 当前 quality evaluation 是启发式 smoke gate，不是安全认证。生产验收必须让人工或独立 Judge 复核安全样例，并结合训练稳定性、adapter 差异和 GRPO 奖励/截断指标判断。
+
+评估使用与实际 CLI/服务相同的 chat template、`enable_thinking: false`、reasoning 清理和纯文本规范化。`quality_gate.fail_pipeline: false` 只把失败降为警告，不会把失败改写为通过；`--skip_eval` 会记录 `not_evaluated`，因此也不会标记 `release_ready`。每个 adapter 根目录写入自包含的 `adapter_provenance.json`，merge 报告据此准确记录 CPT、Fact-SFT、DPO 和 GRPO；旧 adapter 会递归回溯 legacy metadata。
 
 ## `gguf`
 
@@ -356,6 +366,9 @@ grpo:
     model: "your-judge-model"
     api_key: "replace-only-in-local-config"
     timeout_seconds: 120
+    max_retries: 2
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
     max_tokens: 4096
 ```
 
@@ -585,12 +598,16 @@ This section controls GRPO reward optimization after DPO, Fact-SFT, or CPT. GRPO
 | `bf16` / `fp16` / `torch_dtype` | GRPO precision settings; all accept `auto`. | Keep `auto`: BF16-capable CUDA prefers BF16, other CUDA falls back to FP16, and CPU disables mixed precision. |
 | `abort_on_nonfinite_grad_norm` | Abort on a non-finite gradient norm. | Keep it `true` to avoid saving completed-looking artifacts after skipped updates. |
 | `builtin_rewards` | Optional built-in rewards: `reference_overlap`, `term_constraints`, `refusal`, `length_bounds`; defaults to `[]`. | Add only rewards whose matching signals are present in every applicable dataset row. |
-| `reward_judge` | Default reward provider. Configure `enabled`, `base_url`, `api_key`, `model`, `score_range`, `timeout_seconds`, `max_tokens`, `max_retries`, `system_prompt`, and `prompt_template`; `api_key_env` is an optional fallback. | Set `enabled: false` only when at least one built-in reward is enabled. Keep the strict v2 output schema when customizing prompts. |
+| `reward_judge` | Default reward provider. Configure `enabled`, `base_url`, `api_key`, `model`, `score_range`, `timeout_seconds`, `max_tokens`, `max_retries`, `max_concurrency`, `retry_backoff_seconds`, `system_prompt`, and `prompt_template`; `api_key_env` is an optional fallback. | Set `enabled: false` only when at least one built-in reward is enabled. Keep the strict v2 output schema when customizing prompts. |
 | `refusal_terms` | Phrases used by the built-in `refusal` reward to detect a refusal. | Change only when that built-in reward is enabled and the domain needs additional refusal wording. |
 | `beta` | KL/reference regularization strength when supported by the installed TRL version. | Raise carefully when updates drift too far from the reference policy. |
 | `resume_from_checkpoint` | Resume a Trainer checkpoint from the same GRPO stage. | Use only after an interruption; it does not replace `base_adapter_dir`. |
 
 `reward_judge` standardizes model-based scoring through the OpenAI-compatible chat completions API. Put the primary `api_key` only in the private local YAML; if it is null or empty, `api_key_env` may name an environment-variable fallback. Local judges must first be served as an OpenAI-compatible HTTP service, for example with `base_url: "http://localhost:8000/v1"`. Hosted judges use the same fields with their provider URL and model name. For reasoning judges, `max_tokens: 4096` and `timeout_seconds: 120` are the recommended baseline so the final JSON is not lost to a smaller reasoning budget or timeout. `reward_judge.max_tokens` limits judge reasoning plus JSON output; `grpo.max_completion_length` limits policy candidates. Missing judge settings fail before dataset preparation; missing adapters produce commands for continuing GRPO from an existing previous-stage output.
+
+`max_concurrency` accepts `"auto"` or an integer from `1` to `64`. `"auto"` resolves to `grpo.num_generations`, and `effective_concurrency` for each reward batch is `min(resolved cap, completion_count)`. An explicit integer can score completions across multiple prompts in the same reward batch. The semaphore cap applies per training process/rank; it is the whole-run cap for a single-GPU process, while the `asyncio.to_thread` executor may impose a lower physical socket concurrency. Treat it as an upper bound, not a guaranteed worker count.
+
+Judge concurrency covers only scoring for the current rollout batch. The flow is `candidate generation -> concurrent scoring -> wait for the whole batch -> group advantage -> synchronized weight update`; there is no offline full-dataset pre-generation or concurrent optimizer update. Each completion retries independently with exponential backoff and jitter based on `retry_backoff_seconds`, honoring valid `Retry-After` values on HTTP 429/503. If any request exhausts `max_retries`, the entire reward batch fails and partial scores are discarded.
 
 The default `grpo_judge_v2` contract returns five dimension scores plus violation identifiers and a concise reason. Python code, rather than the external model, applies the configured weights and hard caps. Invalid JSON, non-finite or out-of-range dimensions, unknown violations, and extra or missing top-level fields fail closed and are retried up to `max_retries`. Prompt-only rows without supplied grounding evidence use `null` for factual grounding and reweight the other dimensions. Remote judges receive the complete prompt, completion, reference, constraints, and metadata.
 
@@ -621,8 +638,14 @@ This section controls post-training quality evaluation and default generation pa
 | `temperature` | Sampling temperature. Lower values are more stable; `0` is nearly deterministic. | Use low temperature for evaluation; raise it only for more creative output. |
 | `top_p` | Nucleus sampling parameter. | Usually keep it stable for evaluation. |
 | `repetition_penalty` | Penalty for repeated text. | Raise it slightly if the model repeats itself. |
+| `no_repeat_ngram_size` | Repeated n-gram ban used by evaluation and default inference. | Keep the default `6`, or raise carefully for repetition degeneration. |
+| `quality_gate` | Evaluation acceptance gate with `enabled`, `fail_pipeline`, and category `minimum_pass_rate`. | Enabled by default with strict thresholds; failures retain artifacts and make the full pipeline exit `8`. |
+
+The default `minimum_pass_rate` is `1.0` for `domain_knowledge`, `safety_boundary`, and `base_regression`. Adjust these thresholds for your evaluation design; a missing configured category fails closed.
 
 The current quality evaluation is a heuristic smoke gate, not a safety certification. Production acceptance requires human or independent-judge review of safety examples together with training stability, adapter deltas, and GRPO reward/clipping metrics.
+
+Evaluation uses the same chat template, `enable_thinking: false`, reasoning cleanup, and plain-text normalization as CLI/service inference. Setting `quality_gate.fail_pipeline: false` only makes a failed gate non-blocking; it never changes failure into success. `--skip_eval` records `not_evaluated` and does not mark artifacts release-ready. Every adapter root carries a self-contained `adapter_provenance.json`; merge reports use it to record CPT, Fact-SFT, DPO, and GRPO accurately, with recursive legacy-metadata fallback for old adapters.
 
 ## `gguf`
 
@@ -711,6 +734,9 @@ grpo:
     model: "your-judge-model"
     api_key: "replace-only-in-local-config"
     timeout_seconds: 120
+    max_retries: 2
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
     max_tokens: 4096
 ```
 

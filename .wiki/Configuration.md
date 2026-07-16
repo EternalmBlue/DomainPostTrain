@@ -67,10 +67,15 @@ grpo:
     model: "your-judge-model"
     api_key: "replace-with-your-key"
     timeout_seconds: 120
+    max_retries: 2
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
     max_tokens: 4096
 ```
 
 完整流水线先运行 CPT，再运行已启用的后续阶段。默认模板开启 DPO 和 GRPO，因此真实训练前必须准备对应数据并配置 Judge。Judge 默认开启，四个内置奖励默认不启用；如果显式关闭 Judge，`builtin_rewards` 必须至少包含一个与数据字段匹配的奖励。也可以通过命令行跳过阶段，见 [训练流水线](Training-Pipeline)。
+
+`max_concurrency: "auto"` 默认解析为 `num_generations`，每批实际并发为 `min(并发上限, completion 数量)`。显式整数可让同一 reward batch 中的多个 prompt 共享更高并发上限；评分整批完成后才计算 group advantage 并同步更新权重。该上限按训练进程/rank 生效，线程池容量还可能让实际连接数更低。每个请求独立退避重试，429/503 的合法 `Retry-After` 会被遵守，任一最终失败会使整批 reward 失败。
 
 如果不希望在 YAML 中保存 Key，可以把 `api_key` 留空，并设置可选回退：
 
@@ -118,6 +123,8 @@ Fact-SFT、DPO 和 GRPO 的同名字段遵循相同行为：支持 BF16 时优�
 - 质量评估：训练后检查事实回答、安全拒答和基础能力回归。
 
 内置质量评估是启发式 smoke gate，不是生产级安全认证。发布模型前仍需使用独立 Judge 或人工评审复核安全样例。
+
+评估和实际推理共用 chat template、`enable_thinking: false`、reasoning 清理与纯文本规则。默认 `eval.quality_gate` 要求三个类别全部通过；门禁失败保留产物并使完整流水线返回 `8`。`fail_pipeline: false` 只降级为警告，`--skip_eval` 则记录 `not_evaluated`，两者都不会把产物标记为 release-ready。
 
 mock 数据很小，所以默认关闭验证：
 
@@ -215,10 +222,15 @@ grpo:
     model: "your-judge-model"
     api_key: "replace-with-your-key"
     timeout_seconds: 120
+    max_retries: 2
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
     max_tokens: 4096
 ```
 
 The full pipeline starts with CPT and then runs enabled later stages. The default template enables DPO and GRPO, so real training requires their datasets and a configured judge. The judge is enabled by default while all four built-in rewards are opt-in. If you explicitly disable the judge, `builtin_rewards` must contain at least one reward backed by the row data. You can also skip stages from the command line. See [Training Pipeline](Training-Pipeline).
+
+`max_concurrency: "auto"` resolves to `num_generations`, and effective concurrency for each batch is `min(cap, completion count)`. An explicit integer lets prompts in the same reward batch share a larger cap; group advantage and synchronized weight updates run only after the complete score set returns. The cap applies per training process/rank, and executor capacity may make physical connection concurrency lower. Requests retry independently with backoff, valid `Retry-After` values on 429/503 are honored, and one final request failure fails the complete reward batch.
 
 To avoid storing the key in YAML, leave `api_key` empty and configure the optional fallback:
 
@@ -266,6 +278,8 @@ Training validation and post-training quality evaluation are different:
 - Quality evaluation: run after training to check factual answers, safe refusals, and regressions.
 
 The built-in quality evaluation is a heuristic smoke gate, not production safety certification. Independently judge or manually review safety cases before release.
+
+Evaluation shares the deployed chat template, `enable_thinking: false`, reasoning cleanup, and plain-text rules. The default `eval.quality_gate` requires all three categories to pass; a failed gate retains artifacts and makes the full pipeline exit `8`. `fail_pipeline: false` only downgrades failure to a warning, while `--skip_eval` records `not_evaluated`; neither marks artifacts release-ready.
 
 The mock data is small, so validation is disabled by default:
 

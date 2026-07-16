@@ -30,7 +30,7 @@ Judge 是默认奖励器，四个内置奖励默认全部关闭。把奖励名�
 
 ## 为什么本地 Judge 也要暴露 OpenAI-compatible API？
 
-训练链路统一使用 `base_url`、`model` 和 Key 调用 `/v1/chat/completions`。本地模型、DeepSeek、GLM 和其他服务使用同一接口，部署、并发、限流和显存管理由 Judge 服务负责。
+训练链路统一使用 `base_url`、`model` 和 Key 调用 `/v1/chat/completions`。本地模型、DeepSeek、GLM 和其他服务使用同一接口。训练端通过 `max_concurrency` 控制每个进程/rank 的请求上限；Judge 服务仍负责自身部署、服务端限流、容量和显存管理。
 
 ## Judge Key 应该放在哪里？
 
@@ -39,6 +39,14 @@ Judge 是默认奖励器，四个内置奖励默认全部关闭。把奖励名�
 ## `max_completion_length` 和 Judge 的 `max_tokens` 有什么区别？
 
 `grpo.max_completion_length` 限制被训练策略生成的候选回答；`grpo.reward_judge.max_tokens` 限制 Judge 单次评分响应。候选被截断看前者和 `completions/clipped_ratio`；Judge 的 `message.content` 为空则看后者，推理型 Judge 推荐从 `4096` 开始。
+
+## `max_concurrency` 大于 `num_generations` 有意义吗？
+
+它是上限，不会超过当前 reward batch 的 completion 数。单题生成 3 个答案时配置 `4`，实际并发仍是 3；如果同一 reward batch 有两题、每题 3 个答案，显式 `4` 可以跨题并发 4 个请求，而 `auto` 仍解析为每题候选数 3。该 Semaphore 上限按训练进程/rank 生效，`asyncio.to_thread` 的线程池容量还可能让实际 socket 并发更低。
+
+## 异步 Judge 是否会并发更新模型？
+
+不会。当前策略先生成一个 rollout batch，Judge 并发评分并等待整批完成，然后训练器计算 group advantage 并同步执行一次权重更新。链路不预生成整个数据集，也不并发执行多个 optimizer 更新。任一评分请求耗尽独立重试后整批失败，不会使用部分分数或中性奖励继续训练。
 
 ## 如何确认 GRPO 真的更新了模型？
 
@@ -88,7 +96,7 @@ The judge is the default reward provider, and all four built-in rewards are disa
 
 ## Why Must a Local Judge Expose an OpenAI-Compatible API?
 
-The training path uniformly calls `/v1/chat/completions` using `base_url`, `model`, and a key. Local models, DeepSeek, GLM, and other services use the same contract, while deployment, concurrency, rate limiting, and memory management remain the judge service's responsibility.
+The training path uniformly calls `/v1/chat/completions` using `base_url`, `model`, and a key. Local models, DeepSeek, GLM, and other services use the same contract. The training client controls its per-process/rank request cap through `max_concurrency`, while the judge service remains responsible for deployment, server-side limits, capacity, and memory management.
 
 ## Where Should the Judge Key Live?
 
@@ -97,6 +105,14 @@ Put it directly in `reward_judge.api_key` inside the Git-ignored `configs/domain
 ## How Do `max_completion_length` and Judge `max_tokens` Differ?
 
 `grpo.max_completion_length` limits candidate responses from the policy being trained. `grpo.reward_judge.max_tokens` limits each judge response. Candidate truncation points to the former and `completions/clipped_ratio`; empty judge `message.content` points to the latter. Start reasoning judges at `4096`.
+
+## Is `max_concurrency` Useful Above `num_generations`?
+
+It is an upper bound and never exceeds the number of completions in the current reward batch. One prompt with three answers and cap `4` still uses 3. If the same reward batch contains two prompts with three answers each, an explicit cap of `4` can score four requests across prompts, while `auto` still resolves to the per-prompt candidate count of 3. The semaphore cap applies per process/rank, and `asyncio.to_thread` executor capacity can make physical socket concurrency lower.
+
+## Does an Asynchronous Judge Update the Model Concurrently?
+
+No. The current policy generates one rollout batch, the judge scores it concurrently and the trainer waits for the complete batch, then computes group advantage and performs one synchronized weight update. The pipeline neither pre-generates the full dataset nor runs multiple optimizer updates concurrently. If any scoring request exhausts its independent retries, the complete batch fails rather than continuing with partial or neutral rewards.
 
 ## How Do I Know GRPO Really Updated the Model?
 

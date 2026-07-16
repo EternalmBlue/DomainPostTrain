@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from pipeline.adapter_provenance import inspect_peft_adapter, write_adapter_provenance
 from pipeline.grpo_core import (
     as_text_list,
     build_grpo_reward_functions,
@@ -59,19 +60,7 @@ class GrpoAdapterCandidate:
 
 
 def _inspect_grpo_adapter(source: str, path: Path) -> GrpoAdapterCandidate:
-    if not path.exists():
-        return GrpoAdapterCandidate(source, path, "directory does not exist")
-    if not path.is_dir():
-        return GrpoAdapterCandidate(source, path, "path is not a directory")
-
-    missing: list[str] = []
-    if not (path / "adapter_config.json").is_file():
-        missing.append("adapter_config.json")
-    if not any((path / name).is_file() for name in ("adapter_model.safetensors", "adapter_model.bin")):
-        missing.append("adapter_model.safetensors or adapter_model.bin")
-    if missing:
-        return GrpoAdapterCandidate(source, path, f"missing {', '.join(missing)} at adapter directory root")
-    return GrpoAdapterCandidate(source, path, None)
+    return GrpoAdapterCandidate(source, path, inspect_peft_adapter(path))
 
 
 def resolve_grpo_base_adapter(
@@ -486,6 +475,7 @@ def train_grpo(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
     bf16, fp16 = _resolve_training_precision(grpo_training)
     grpo_args = GRPOConfig(**_grpo_config_kwargs(config, output_dir, has_eval, GRPOConfig))
     reward_funcs = _reward_functions(config)
+    judge_metadata_before_training = reward_judge_metadata(grpo_cfg)
     trainer_kwargs = {
         "model": model,
         "args": grpo_args,
@@ -509,9 +499,12 @@ def train_grpo(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
     trainable_dtypes_after_trainer = trainable_parameter_dtype_counts(trainer.model)
     resume = grpo_training.get("resume_from_checkpoint")
     logger.info(
-        "Starting GRPO training. num_generations=%s, max_completion_length=%s, rewards=%s",
+        "Starting GRPO training. num_generations=%s, max_completion_length=%s, "
+        "judge_max_concurrency=%s (resolved=%s), rewards=%s",
         grpo_cfg.get("num_generations", 4),
         grpo_cfg.get("max_completion_length", 256),
+        judge_metadata_before_training.get("configured_max_concurrency"),
+        judge_metadata_before_training.get("resolved_max_concurrency"),
         [getattr(func, "__name__", str(func)) for func in reward_funcs],
     )
     train_result = trainer.train(resume_from_checkpoint=resume if resume else None)
@@ -551,7 +544,7 @@ def train_grpo(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
             "top_p": float(grpo_cfg.get("top_p", 0.95)),
             "beta": float(grpo_cfg.get("beta", 0.0)),
             "builtin_rewards": as_text_list(grpo_cfg.get("builtin_rewards", [])),
-            "reward_judge": reward_judge_metadata(grpo_cfg),
+            "reward_judge": reward_judge_metadata(grpo_cfg, reward_funcs),
         },
         "peft": _peft_config(config),
         "precision": {"bf16": bf16, "fp16": fp16},
@@ -572,6 +565,12 @@ def train_grpo(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
         "created_at_utc": utc_now(),
     }
     write_json(output_dir / "grpo_training_metadata.json", metadata)
+    write_adapter_provenance(
+        output_dir,
+        stage="grpo",
+        created_at_utc=metadata["created_at_utc"],
+        base_adapter_dir=base_adapter_dir,
+    )
     write_grpo_training_report(resolve_training_path("outputs/reports/grpo_report.md", "outputs/reports/grpo_report.md"), metadata)
     return metadata
 
@@ -617,6 +616,11 @@ def write_grpo_training_report(path: Path, metadata: dict[str, Any]) -> None:
         f"- beta: `{grpo.get('beta')}`",
         f"- built-in rewards: `{grpo.get('builtin_rewards')}`",
         f"- reward judge schema / model: `{reward_judge.get('schema_version')}` / `{reward_judge.get('model')}`",
+        f"- reward judge configured / resolved concurrency: `{reward_judge.get('configured_max_concurrency')}` / `{reward_judge.get('resolved_max_concurrency')}`",
+        f"- reward judge last effective concurrency / completions: `{reward_judge.get('effective_concurrency')}` / `{reward_judge.get('completion_count')}`",
+        f"- reward judge batches / max effective concurrency / total completions: `{reward_judge.get('batch_count')}` / `{reward_judge.get('max_effective_concurrency')}` / `{reward_judge.get('total_completion_count')}`",
+        f"- reward judge last / mean batch latency (seconds): `{reward_judge.get('judge_batch_latency_seconds')}` / `{reward_judge.get('mean_judge_batch_latency_seconds')}`",
+        f"- reward judge retry backoff (seconds): `{reward_judge.get('retry_backoff_seconds')}`",
         f"- learning_rate: `{metadata.get('training', {}).get('learning_rate')}`",
         f"- epoch / max_steps: `{metadata.get('training', {}).get('epochs')}` / `{metadata.get('training', {}).get('max_steps')}`",
         f"- gradient accumulation: `{metadata.get('training', {}).get('gradient_accumulation_steps')}`",

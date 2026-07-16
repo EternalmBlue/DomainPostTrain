@@ -19,6 +19,7 @@ from transformers import (
     TrainingArguments,
 )
 
+from pipeline.adapter_provenance import write_adapter_provenance
 from pipeline.modeling import configure_generation_tokens, disable_cache, load_tokenizer, load_transformers_model
 from pipeline.utils import (
     config_without_private_keys,
@@ -457,6 +458,11 @@ def train(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
         "created_at_utc": utc_now(),
     }
     write_json(output_dir / "training_metadata.json", metadata)
+    write_adapter_provenance(
+        output_dir,
+        stage="cpt",
+        created_at_utc=metadata["created_at_utc"],
+    )
     write_training_report(resolve_training_path("outputs/reports/training_report.md", "outputs/reports/training_report.md"), metadata)
     return metadata
 

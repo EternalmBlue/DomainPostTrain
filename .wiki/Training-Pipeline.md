@@ -12,6 +12,8 @@ CPT -> Fact-SFT -> DPO -> GRPO -> merge -> heuristic quality eval
 
 流水线先产出 PEFT adapter，再把选定 adapter 合并成完整 Hugging Face 模型。
 
+每个 adapter 同时保存自包含的 `adapter_provenance.json`。merge 报告从该 manifest 准确列出 CPT、Fact-SFT、DPO、GRPO；旧 adapter 使用递归 legacy metadata 回溯。质量门禁失败时训练和合并产物仍保留，但完整流水线返回 `8`，报告显示 `quality_gate_failed` 和 `release_ready: false`。
+
 ## 完整流水线
 
 ```bash
@@ -98,6 +100,8 @@ GRPO 起点按“显式 `grpo.base_adapter_dir` -> DPO -> Fact-SFT -> CPT”解�
 
 GRPO 会为每个 prompt 采样多个 completion，并应用默认外部 Judge 及显式启用的内置奖励。推理型 Judge 的输出预算由 `grpo.reward_judge.max_tokens` 控制，建议为 `4096`，超时建议为 `120` 秒。详见 [GRPO 与 Reward Judge](GRPO-and-Reward-Judge)。
 
+外部评分按当前 rollout batch 异步并发：候选生成后，以 `min(max_concurrency 上限, completion 数量)` 发出请求，等待整批结束后才计算 group advantage 并同步执行反向传播和 optimizer 更新。`max_concurrency: "auto"` 跟随 `num_generations`；显式整数可跨同一 reward batch 的多个 prompt 使用。它是每个训练进程/rank 的 Semaphore 上限，线程池容量可能进一步降低物理并发。不会预生成整个数据集，也不会并发更新模型。每个请求独立退避重试，429/503 遵守合法 `Retry-After`；任一最终失败则整批 reward 失败。
+
 从已存在的 DPO/Fact-SFT/CPT adapter 继续流水线：
 
 ```bash
@@ -158,6 +162,8 @@ CPT -> Fact-SFT -> DPO -> GRPO -> merge -> heuristic quality eval
 ```
 
 The pipeline produces PEFT adapters first, then merges the selected adapter into a full Hugging Face model.
+
+Each adapter also stores a self-contained `adapter_provenance.json`. Merge reports derive the CPT, Fact-SFT, DPO, and GRPO stage chain from it, with recursive legacy-metadata fallback for older adapters. A failed quality gate retains training and merge artifacts but makes the full pipeline exit `8`, with `quality_gate_failed` and `release_ready: false` in the report.
 
 ## Full Pipeline
 
@@ -244,6 +250,8 @@ Common GRPO debugging flags:
 | `--base_adapter_dir` | Select the starting adapter for GRPO. |
 
 GRPO samples multiple completions per prompt and applies the default external judge plus explicitly enabled built-in rewards. Reasoning-judge output is controlled by `grpo.reward_judge.max_tokens`; use `4096` tokens and a `120` second timeout as a starting point. See [GRPO And Reward Judge](GRPO-and-Reward-Judge).
+
+External scoring is asynchronous within the current rollout batch: after candidate generation, requests run with `min(max_concurrency cap, completion count)`, and the trainer waits for the full batch before computing group advantage and performing synchronized backpropagation and optimizer update. `max_concurrency: "auto"` follows `num_generations`; an explicit integer can be shared across prompts in the same reward batch. It is a per-process/rank semaphore cap, and executor capacity may reduce physical concurrency further. The pipeline does not pre-generate the full dataset or update the model concurrently. Requests retry independently with backoff, valid `Retry-After` on 429/503 is honored, and any final failure fails the complete reward batch.
 
 Continue the pipeline from existing DPO/Fact-SFT/CPT adapters:
 

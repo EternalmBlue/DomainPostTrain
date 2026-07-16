@@ -217,6 +217,8 @@ python scripts/training/train_pipeline.py --config configs/domain_post_training.
 - validation set 用于训练过程中的 loss/eval signal。
 - quality evaluation 用于训练完成后检查事实回答、安全拒答和基础能力回归。当前评估器是启发式 smoke gate，不是安全认证；生产验收还需人工或独立 Judge 复核安全样例。
 
+质量评估与实际推理共享 chat template、`enable_thinking: false`、reasoning 清理和纯文本输出规则。默认 `eval.quality_gate` 要求三个类别全部通过；门禁失败时训练/合并产物仍会保留，但完整流水线返回退出码 `8`，报告状态为 `quality_gate_failed` 且 `release_ready: false`。显式 `--skip_eval` 不阻断续跑，但产物不会标记为可发布。
+
 当前 mock 数据很小，所以默认不切训练验证集：
 
 ```yaml
@@ -275,6 +277,9 @@ grpo:
     api_key: "replace-with-your-key"
     model: "local-reward-judge"
     timeout_seconds: 120
+    max_retries: 2
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
     max_tokens: 4096
 ```
 
@@ -302,6 +307,14 @@ python scripts/training/train_grpo.py --config configs/domain_post_training.loca
 ```
 
 使用 Judge 时，GRPO 样例可以只包含 `prompt`。`reference_overlap`、`term_constraints`、`refusal`、`length_bounds` 默认关闭，可按数据中的奖励字段加入 `builtin_rewards`。如果显式关闭 Judge，则必须至少启用一个内置奖励，并为每行提供匹配的奖励信号。本地 Judge 必须先暴露 `/v1/chat/completions`；不要把本地模型路径或 Hub ID 填入 `model`。
+
+GRPO 保持在线、同步更新语义：`rollout batch -> 当前策略批量生成候选 -> 并发调用 Judge -> 等待整批评分完成 -> 计算 group advantage -> 同步反向传播和 optimizer 更新`。它不会预生成整个数据集，也不会并发执行多个 `optimizer.step()`。
+
+`reward_judge.max_concurrency` 接受 `"auto"` 或 `1..64` 的整数。`"auto"` 解析为当前 `grpo.num_generations`；每个 reward batch 的有效并发始终是 `min(解析后的上限, 当前 completion 数量)`。因此单题 3 个答案配 `4` 时实际并发是 3；两题各 3 个答案配 `auto` 时上限仍是 3；显式配 `4` 时可跨同一 reward batch 的两道题并发 4 个请求。Semaphore 上限按训练进程/rank 分别生效，当前单 GPU 运行等同于整次运行的上限；`asyncio.to_thread` 的线程池容量还可能进一步限制实际同时建立的连接，所以该值是上限而不是大数值一定能达到的并发保证。
+
+每个 completion 独立重试，使用以 `retry_backoff_seconds` 为基数的指数退避和随机抖动，并在 HTTP 429/503 返回合法 `Retry-After` 时遵守服务端等待时间。整批任务会全部等待结束；任一请求耗尽重试后，整批 reward 失败，已成功的部分分数不会被应用，也不会填充中性奖励。
+
+训练日志和 GRPO 元数据会记录 `configured_max_concurrency`、`effective_concurrency`、`completion_count`、`judge_batch_latency_seconds` 和 `retry_backoff_seconds`，用于核对限流与实际吞吐。
 
 默认 Judge 使用 `grpo_judge_v2` 严格 JSON 契约，分别评估任务完成、事实依据、显式约束、安全拒绝、相关性与清晰度。训练代码按 `30/25/15/20/10` 的初始权重确定性合成分数，并对泄密、危险执行、拒绝失败、事实冲突等违规应用硬上限。该权重是需要用领域专家样本持续校准的项目基线，不是通用行业标准。
 
@@ -571,6 +584,8 @@ The training validation set and post-training quality evaluation are separate co
 - A validation set provides loss/eval signals during training.
 - Quality evaluation checks factual answers, safe refusals, and base-capability regressions after training. The current evaluator is a heuristic smoke gate, not a safety certification; production acceptance needs human or independent-judge review of safety examples.
 
+Quality evaluation shares the deployed inference chat template, `enable_thinking: false`, reasoning cleanup, and plain-text output rules. By default, `eval.quality_gate` requires every configured category to pass. A failed gate retains all training and merge artifacts but makes the full pipeline exit with code `8`, writes `quality_gate_failed`, and sets `release_ready: false`. Explicit `--skip_eval` remains non-blocking for resume workflows, but artifacts are not marked release-ready.
+
 The mock dataset is intentionally small, so training validation is disabled by default:
 
 ```yaml
@@ -629,6 +644,9 @@ grpo:
     api_key: "replace-with-your-key"
     model: "local-reward-judge"
     timeout_seconds: 120
+    max_retries: 2
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
     max_tokens: 4096
 ```
 
@@ -656,6 +674,14 @@ python scripts/training/train_grpo.py --config configs/domain_post_training.loca
 ```
 
 With the judge enabled, a GRPO row may contain only `prompt`. The `reference_overlap`, `term_constraints`, `refusal`, and `length_bounds` rewards are disabled by default and can be added to `builtin_rewards` when their corresponding fields exist in the data. If the judge is explicitly disabled, enable at least one built-in reward and provide a matching signal in every row. A local judge must expose `/v1/chat/completions`; do not put a local model path or Hub ID in `model`.
+
+GRPO keeps online, synchronized update semantics: `rollout batch -> generate candidates with the current policy -> call the judge concurrently -> wait for the complete reward batch -> compute group advantage -> run synchronized backpropagation and optimizer update`. It does not pre-generate the full dataset and does not execute concurrent `optimizer.step()` calls.
+
+`reward_judge.max_concurrency` accepts `"auto"` or an integer from `1` to `64`. `"auto"` resolves to the current `grpo.num_generations`; effective concurrency for each reward batch is always `min(resolved cap, current completion count)`. One prompt with three completions and cap `4` therefore uses 3; two prompts with three completions each and `auto` still use a cap of 3; an explicit cap of `4` can score four completions across those prompts concurrently. The semaphore cap applies per training process/rank, which is the whole run for the current single-GPU setup. The `asyncio.to_thread` executor may impose a lower physical worker limit, so the setting is an upper bound rather than a guarantee that very large caps create that many simultaneous sockets.
+
+Each completion retries independently with exponential backoff and jitter based on `retry_backoff_seconds`, while valid `Retry-After` values on HTTP 429/503 are honored. All tasks are allowed to settle. If any request exhausts its retries, the entire reward batch fails; successful partial scores are discarded and no neutral reward is substituted.
+
+Training logs and GRPO metadata record `configured_max_concurrency`, `effective_concurrency`, `completion_count`, `judge_batch_latency_seconds`, and `retry_backoff_seconds` for rate-limit and throughput analysis.
 
 The default judge uses the strict `grpo_judge_v2` JSON contract and scores task fulfillment, factual grounding, explicit constraints, safety/refusal, and relevance/clarity independently. Training code deterministically combines them with initial `30/25/15/20/10` weights and applies hard caps for leaks, unsafe enablement, refusal failures, factual contradictions, and related violations. These weights are a project baseline to calibrate with domain-expert examples, not a universal industry standard.
 

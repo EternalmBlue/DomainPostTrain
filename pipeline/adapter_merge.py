@@ -8,10 +8,10 @@ from typing import Any
 import torch
 from peft import PeftModel
 
+from pipeline.adapter_provenance import inspect_peft_adapter, resolve_adapter_provenance
 from pipeline.modeling import configure_generation_tokens, load_tokenizer, load_transformers_model
 from pipeline.utils import (
     load_config,
-    read_json,
     resolve_training_path,
     setup_logging,
     short_error,
@@ -30,19 +30,30 @@ def _resolve_merge_dtype(config: dict[str, Any]) -> Any:
 
 
 def write_model_card(path: Path, report: dict[str, Any]) -> None:
-    sft_note = ""
-    if report.get("fact_sft_applied"):
-        sft_note = "\nPost-CPT alignment: assistant-only Fact-SFT for grounded QA, refusal behavior, unknown-boundary answers, and answer style.\n"
-    grpo_note = ""
-    if report.get("grpo_applied"):
-        grpo_note = "\nPost-preference alignment: GRPO reward optimization with configured prompt-level reward functions.\n"
+    stage_descriptions = {
+        "cpt": "CPT full-token causal language modeling on the configured domain corpus.",
+        "fact_sft": "Fact-SFT assistant-only alignment for grounded answers, refusal behavior, and answer style.",
+        "dpo": "DPO preference alignment using configured chosen/rejected response pairs.",
+        "grpo": "GRPO reward optimization using the configured prompt-level reward functions.",
+    }
+    applied_stages = report.get("applied_stages", [])
+    stage_notes = "\n".join(
+        f"- {stage_descriptions[stage]}" for stage in applied_stages if stage in stage_descriptions
+    )
+    if not stage_notes:
+        stage_notes = "- No training-stage provenance was available for the selected adapter."
     text = f"""# DomainPostTrain Merged PEFT Model
 
 Base model: {report["base_model_name_or_path"]}
 
 Training method: PEFT LoRA. CPT uses full-token causal language modeling. Fact-SFT, when present, uses assistant-only loss. DPO and GRPO, when present, are optional alignment stages.
-{sft_note}
-{grpo_note}
+
+Applied training stages: {' -> '.join(applied_stages) if applied_stages else 'unknown'}
+
+{stage_notes}
+
+Provenance complete: {report.get("provenance_complete", False)}
+
 Training corpus: static domain documentation selected by the local pipeline. This model does not use RAG, retrieval, or runtime source-code access.
 
 GGUF note: GGUF is a post-training inference artifact. Train from Hugging Face/safetensors weights, merge adapters, then convert or quantize as needed.
@@ -79,19 +90,27 @@ def candidate_adapter_dirs(config: dict[str, Any]) -> list[tuple[str, Path]]:
 
 def resolve_merge_adapter_dir(config: dict[str, Any], adapter_dir: Path | None = None) -> tuple[Path, str]:
     if adapter_dir is not None:
+        issue = inspect_peft_adapter(adapter_dir)
+        if issue is not None:
+            raise FileNotFoundError(f"Invalid PEFT adapter from argument at {adapter_dir}: {issue}")
         return adapter_dir, "argument"
 
     merge_cfg = config.get("merge", {})
     configured_adapter_dir = merge_cfg.get("adapter_dir")
     if configured_adapter_dir:
-        return resolve_training_path(configured_adapter_dir, configured_adapter_dir), "merge.adapter_dir"
+        configured = resolve_training_path(configured_adapter_dir, configured_adapter_dir)
+        issue = inspect_peft_adapter(configured)
+        if issue is not None:
+            raise FileNotFoundError(f"Invalid PEFT adapter from merge.adapter_dir at {configured}: {issue}")
+        return configured, "merge.adapter_dir"
 
     checked: list[str] = []
     for source, candidate in candidate_adapter_dirs(config):
-        if candidate.exists():
+        issue = inspect_peft_adapter(candidate)
+        if issue is None:
             return candidate, source
-        checked.append(f"{source}={candidate}")
-    raise FileNotFoundError("PEFT adapter directory not found. Checked: " + ", ".join(checked))
+        checked.append(f"{source}={candidate}: {issue}")
+    raise FileNotFoundError("No valid PEFT adapter was found. Checked: " + "; ".join(checked))
 
 
 def merge_adapter(config: dict[str, Any], adapter_dir: Path | None = None, output_dir: Path | None = None) -> dict[str, Any]:
@@ -102,8 +121,6 @@ def merge_adapter(config: dict[str, Any], adapter_dir: Path | None = None, outpu
     base_model = config["base_model_name_or_path"]
     adapter_dir, adapter_source = resolve_merge_adapter_dir(config, adapter_dir)
     output_dir = output_dir or resolve_training_path(training_cfg.get("merged_output_dir"), "outputs/merged_model")
-    if not adapter_dir.exists():
-        raise FileNotFoundError(f"PEFT adapter directory not found: {adapter_dir}")
 
     dtype = _resolve_merge_dtype(config)
     model_kwargs: dict[str, Any] = {}
@@ -127,20 +144,21 @@ def merge_adapter(config: dict[str, Any], adapter_dir: Path | None = None, outpu
 
     logger.info("Verifying merged model can load directly through the selected Transformers auto loader.")
     _ = load_transformers_model(str(output_dir), trust_remote_code=trust_remote_code, logger=logger)
-    sft_metadata = read_json(adapter_dir / "fact_sft_training_metadata.json", default={})
-    grpo_metadata = read_json(adapter_dir / "grpo_training_metadata.json", default={})
-    cpt_metadata = read_json(adapter_dir / "training_metadata.json", default={}) or read_json(
-        adapter_dir / "base_cpt_training_metadata.json", default={}
-    )
+    provenance = resolve_adapter_provenance(adapter_dir)
+    provenance_report = provenance.report_data()
+    applied_stages = set(provenance.stages)
     report = {
         "status": "completed",
         "base_model_name_or_path": base_model,
         "adapter_dir": str(adapter_dir),
         "adapter_source": adapter_source,
         "merged_output_dir": str(output_dir),
-        "fact_sft_applied": bool(sft_metadata),
-        "grpo_applied": bool(grpo_metadata),
-        "cpt_adapter_metadata_present": bool(cpt_metadata),
+        **provenance_report,
+        "cpt_applied": "cpt" in applied_stages,
+        "fact_sft_applied": "fact_sft" in applied_stages,
+        "dpo_applied": "dpo" in applied_stages,
+        "grpo_applied": "grpo" in applied_stages,
+        "cpt_adapter_metadata_present": "cpt" in applied_stages,
         "dtype": str(dtype),
         "safe_serialization": safe_serialization,
         "merged_model_load_test_passed": True,

@@ -24,6 +24,8 @@ grpo:
     timeout_seconds: 120
     max_tokens: 4096
     max_retries: 2
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
 ```
 
 `api_key` 是明文敏感信息。`configs/*.local.yaml` 必须保持 Git 忽略，不要把真实 Key 放入受跟踪模板、训练报告或分享的配置中。若不希望在 YAML 中保存 Key，可将 `api_key` 留空，并使用环境变量作为可选回退：
@@ -128,6 +130,41 @@ grpo:
 - HTTP body 直接返回 v2 JSON 不够，它必须位于 chat completions 响应包中。
 - 连通性和响应格式在首次评分请求时验证；预检不会主动调用远端 API。
 
+## 异步并发评分与同步更新
+
+GRPO 保持在线 rollout 和同步权重更新：
+
+```text
+rollout batch
+  -> 当前策略批量生成候选
+  -> 外部 Judge 并发评分
+  -> 等待整个 reward batch 完成
+  -> 计算 group advantage
+  -> 同步反向传播和 optimizer 更新
+```
+
+这里的异步只缩短外部 Judge I/O 等待，不会预生成整个数据集、建立离线 rollout buffer 或并发执行多个 `optimizer.step()`。任一批次的候选都由更新前的同一当前策略生成，完整分数返回后才进入组内相对优势计算。
+
+`reward_judge.max_concurrency` 接受 `"auto"` 或 `1..64` 的整数：
+
+- `"auto"` 解析为当前 `grpo.num_generations`。
+- 实际并发度始终是 `min(解析后的并发上限, 当前 reward batch 的 completion 数量)`。
+- 显式整数是整个训练进程内的请求上限，可跨同一 reward batch 中的多个 prompt 使用。
+
+| 问题数 | 每题答案数 | 请求总数 | 配置 | 实际并发 |
+|---:|---:|---:|---:|---:|
+| 1 | 3 | 3 | `auto` | 3 |
+| 1 | 3 | 3 | `4` | 3 |
+| 2 | 3 | 6 | `auto` | 3 |
+| 2 | 3 | 6 | `4` | 4 |
+| 2 | 4 | 8 | `2` | 2 |
+
+Semaphore 上限按训练进程/rank 分别生效；当前单 GPU 训练只有一个进程，因此等同于整次运行的上限。底层 `asyncio.to_thread` 还受线程池容量约束，大并发配置不保证物理上一定同时建立相同数量的 socket。
+
+每个 completion 独立执行 `max_retries`，退避时间以 `retry_backoff_seconds` 为基数做指数增长并加入随机抖动。HTTP 429/503 返回合法 `Retry-After` 时优先遵守服务端等待时间。所有并发任务都会等待结束并按输入顺序恢复 reward；任一请求最终失败时，整个 reward batch 失败，已成功的部分分数被丢弃，不会填充中性奖励。
+
+每批日志记录 `configured_max_concurrency`、`effective_concurrency`、`completion_count`、`judge_batch_latency_seconds` 和 `retry_backoff_seconds`。训练元数据保存配置值、最后一批指标，以及批次数、最大实际并发、总 completion 数和平均批延迟；训练报告展示同一汇总。
+
 推理型 Judge 可能先把输出预算消耗在 `reasoning_content`，导致 `message.content` 为空。建议从以下配置起步：
 
 ```yaml
@@ -223,6 +260,8 @@ grpo:
     timeout_seconds: 120
     max_tokens: 4096
     max_retries: 2
+    max_concurrency: "auto"
+    retry_backoff_seconds: 1.0
 ```
 
 `api_key` is a plaintext secret. Keep `configs/*.local.yaml` ignored by Git and never put a live key in tracked templates, training reports, or shared configs. To avoid storing the key in YAML, leave `api_key` empty and use an environment variable as an optional fallback:
@@ -326,6 +365,41 @@ Local code also forces violations for empty responses, length failures, and forb
 - Responses must use an OpenAI-compatible envelope. Strict v2 JSON belongs in `choices[0].message.content`; compatible services may use `choices[0].text`.
 - Returning v2 JSON as the raw HTTP body is insufficient; it must be inside the chat completions envelope.
 - Connectivity and response format are validated on the first scoring request; preflight does not proactively call the remote API.
+
+## Asynchronous Scoring and Synchronized Updates
+
+GRPO retains online rollouts and synchronized weight updates:
+
+```text
+rollout batch
+  -> generate candidates with the current policy
+  -> score them concurrently with the external judge
+  -> wait for the complete reward batch
+  -> compute group advantage
+  -> run synchronized backpropagation and optimizer update
+```
+
+Asynchrony only reduces external-judge I/O wait. It does not pre-generate the full dataset, create an offline rollout buffer, or execute concurrent `optimizer.step()` calls. Candidates in a batch come from the same current policy, and group-relative advantage is computed only after the complete score set returns.
+
+`reward_judge.max_concurrency` accepts `"auto"` or an integer from `1` to `64`:
+
+- `"auto"` resolves to the current `grpo.num_generations`.
+- Effective concurrency is always `min(resolved cap, completion count in the current reward batch)`.
+- An explicit integer is the request cap for one training process and can be shared across prompts in the same reward batch.
+
+| Prompts | Answers each | Requests | Setting | Effective concurrency |
+|---:|---:|---:|---:|---:|
+| 1 | 3 | 3 | `auto` | 3 |
+| 1 | 3 | 3 | `4` | 3 |
+| 2 | 3 | 6 | `auto` | 3 |
+| 2 | 3 | 6 | `4` | 4 |
+| 2 | 4 | 8 | `2` | 2 |
+
+The semaphore cap applies separately to each training process/rank. The current single-GPU run has one process, so it is also the whole-run cap. The underlying `asyncio.to_thread` executor can have fewer workers, so a large configured cap does not guarantee the same number of simultaneous physical sockets.
+
+Each completion independently uses `max_retries`, exponential backoff with jitter based on `retry_backoff_seconds`, and valid `Retry-After` delays from HTTP 429/503. All concurrent tasks settle and rewards are restored in input order. If any request ultimately fails, the complete reward batch fails; successful partial scores are discarded and no neutral reward is substituted.
+
+Per-batch logs record `configured_max_concurrency`, `effective_concurrency`, `completion_count`, `judge_batch_latency_seconds`, and `retry_backoff_seconds`. Training metadata stores configuration values, the latest batch metrics, batch count, maximum effective concurrency, total completions, and mean batch latency; the training report presents the same summary.
 
 Reasoning judges can consume the output budget in `reasoning_content` and leave `message.content` empty. Start with:
 
